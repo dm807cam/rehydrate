@@ -9,7 +9,7 @@ description = "reHydrate publish layer: post OCR transcripts as drafts to Ghost 
 [dependencies]
 base64 = "0.22"
 hex = { workspace = true }
-jsonwebtoken = { version = "9", default-features = false }
+jsonwebtoken = { version = "10", default-features = false }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
