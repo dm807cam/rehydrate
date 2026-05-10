@@ -79,6 +79,7 @@ export interface OcrModelDescriptor {
 
 export type OcrStatusReport =
   | { kind: "missing"; descriptor: OcrModelDescriptor }
+  | { kind: "cached"; descriptor: OcrModelDescriptor }
   | { kind: "ready"; descriptor: OcrModelDescriptor };
 
 export type OcrProgressEvent =
@@ -87,6 +88,7 @@ export type OcrProgressEvent =
   | { kind: "page_failed"; page_index: number; message: string }
   | { kind: "done"; pages_done: number; total_chars: number }
   | { kind: "download_progress"; done: number; total: number | null }
+  | { kind: "model_loading" }
   | { kind: "download_done" };
 
 export interface TranscriptSummary {

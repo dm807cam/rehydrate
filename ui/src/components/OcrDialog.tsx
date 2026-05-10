@@ -4,28 +4,32 @@ import type {
   DocumentSummary,
   OcrProgressEvent,
   OcrStatusReport,
-  TranscriptSummary,
 } from "../types";
 
 interface Props {
   document: DocumentSummary;
   onCancel: () => void;
-  onDone: (summary: TranscriptSummary) => void;
+  /** User clicked Convert. The dialog closes immediately;
+   * transcription runs in the background and is tracked by the
+   * App-level OCR job state (chip + completion toast). */
+  onStart: (language: string | undefined) => void;
 }
 
 type Phase =
   | { kind: "loading" }
   | { kind: "missing"; descriptor: OcrStatusReport["descriptor"] }
   | { kind: "downloading"; bytes_done: number; bytes_total: number | null }
+  | { kind: "model_loading" }
   | { kind: "ready"; descriptor: OcrStatusReport["descriptor"] }
-  | { kind: "running"; pages_done: number; current_chars: number }
-  | { kind: "done"; summary: TranscriptSummary }
   | { kind: "error"; message: string };
 
 /* "Convert to text…" dialog. Walks the user through (a) downloading
- * the model on first run, (b) running the OCR with per-page progress,
- * and (c) reporting the resulting transcript summary. */
-export function OcrDialog({ document, onCancel, onDone }: Props) {
+ * the model on first run and (b) loading it into memory; once the
+ * model is ready and the user clicks Convert, the dialog hands off
+ * to App-level state and closes. The actual transcription progress
+ * is shown in the floating `OcrJobChip` so the user can keep
+ * working while pages are being processed. */
+export function OcrDialog({ document, onCancel, onStart }: Props) {
   const [phase, setPhase] = useState<Phase>({ kind: "loading" });
   const [language, setLanguage] = useState<string>("");
   // Elapsed seconds since the user clicked Download — surfaced in
@@ -43,7 +47,15 @@ export function OcrDialog({ document, onCancel, onDone }: Props) {
     return () => window.clearInterval(id);
   }, [downloadStartedAt]);
 
-  // Load model status on mount.
+  // Load model status on mount. Three branches:
+  //   - ready: backend already loaded in this process; show
+  //     Convert immediately.
+  //   - cached: weights are on disk from a prior session; the
+  //     backend just needs an in-memory ISQ pass. Auto-trigger
+  //     it so the user doesn't have to click a "Load" button
+  //     they don't care about.
+  //   - missing: weights aren't on disk; ask the user to consent
+  //     to a multi-GB download before we start it.
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -52,6 +64,27 @@ export function OcrDialog({ document, onCancel, onDone }: Props) {
         if (cancelled) return;
         if (status.kind === "ready") {
           setPhase({ kind: "ready", descriptor: status.descriptor });
+        } else if (status.kind === "cached") {
+          // Same backend command handles both — it skips the
+          // network phase when files are already cached and just
+          // runs the load step.
+          setDownloadStartedAt(Date.now());
+          setElapsed(0);
+          setPhase({ kind: "model_loading" });
+          try {
+            await ipc.ocrDownloadDefaultModel();
+            if (cancelled) return;
+            const after = await ipc.ocrStatus();
+            setDownloadStartedAt(null);
+            if (after.kind === "ready") {
+              setPhase({ kind: "ready", descriptor: after.descriptor });
+            }
+          } catch (e) {
+            if (!cancelled) {
+              setDownloadStartedAt(null);
+              setPhase({ kind: "error", message: String(e) });
+            }
+          }
         } else {
           setPhase({ kind: "missing", descriptor: status.descriptor });
         }
@@ -64,7 +97,10 @@ export function OcrDialog({ document, onCancel, onDone }: Props) {
     };
   }, []);
 
-  // Stream progress events.
+  // Stream model setup events. We deliberately ignore `page_*`
+  // events here — those are handled by the App-level OCR job
+  // tracker (the floating chip / completion toast), so closing
+  // this dialog mid-OCR doesn't lose progress visibility.
   useEffect(() => {
     let unlisten: (() => void) | undefined;
     onOcrProgress((ev: OcrProgressEvent) => {
@@ -76,6 +112,8 @@ export function OcrDialog({ document, onCancel, onDone }: Props) {
               bytes_done: ev.done,
               bytes_total: ev.total,
             };
+          case "model_loading":
+            return { kind: "model_loading" };
           case "download_done":
             // Status query at finish settles the descriptor.
             ipc.ocrStatus().then((s) => {
@@ -84,19 +122,6 @@ export function OcrDialog({ document, onCancel, onDone }: Props) {
               }
             });
             return current;
-          case "page_done":
-            if (current.kind === "running") {
-              return {
-                kind: "running",
-                pages_done: ev.page_index + 1,
-                current_chars: current.current_chars + ev.chars,
-              };
-            }
-            return {
-              kind: "running",
-              pages_done: ev.page_index + 1,
-              current_chars: ev.chars,
-            };
           default:
             return current;
         }
@@ -126,18 +151,11 @@ export function OcrDialog({ document, onCancel, onDone }: Props) {
     }
   }
 
-  async function startTranscribe() {
-    try {
-      setPhase({ kind: "running", pages_done: 0, current_chars: 0 });
-      const summary = await ipc.transcribeDocument(
-        document.document_id,
-        language.trim() || undefined,
-      );
-      setPhase({ kind: "done", summary });
-      onDone(summary);
-    } catch (e) {
-      setPhase({ kind: "error", message: String(e) });
-    }
+  function startTranscribe() {
+    // Hand the job to App-level state and close the dialog.
+    // Transcription runs in the background; the user sees a
+    // floating progress chip and a completion toast.
+    onStart(language.trim() || undefined);
   }
 
   return (
@@ -171,7 +189,7 @@ export function OcrDialog({ document, onCancel, onDone }: Props) {
 
         {phase.kind === "downloading" && (
           <>
-            <p>Downloading and loading the model…</p>
+            <p>Downloading model from HuggingFace…</p>
             <DownloadBar
               done={phase.bytes_done}
               total={phase.bytes_total}
@@ -183,7 +201,20 @@ export function OcrDialog({ document, onCancel, onDone }: Props) {
                       ? ` / ${(phase.bytes_total / 1e9).toFixed(2)} GB`
                       : ""
                   } · ${formatElapsed(elapsed)}`
-                : `First run downloads several GB from HuggingFace; runs entirely on your machine afterwards. Working — ${formatElapsed(elapsed)} elapsed.`}
+                : `Working — ${formatElapsed(elapsed)} elapsed. Files run a few GB total; this runs entirely on your machine afterwards.`}
+            </p>
+          </>
+        )}
+
+        {phase.kind === "model_loading" && (
+          <>
+            <p>Loading model into memory…</p>
+            <DownloadBar done={0} total={null} />
+            <p className="muted">
+              The download is on disk. Mapping the weights and quantising to
+              4-bit takes a couple of minutes on a consumer machine — your
+              fan may spin up briefly. Working — {formatElapsed(elapsed)}{" "}
+              elapsed.
             </p>
           </>
         )}
@@ -206,33 +237,6 @@ export function OcrDialog({ document, onCancel, onDone }: Props) {
               </button>
               <button className="primary" onClick={startTranscribe}>
                 Convert
-              </button>
-            </div>
-          </>
-        )}
-
-        {phase.kind === "running" && (
-          <>
-            <p>OCR in progress…</p>
-            <p className="muted">
-              {phase.pages_done} {phase.pages_done === 1 ? "page" : "pages"}{" "}
-              done · {phase.current_chars} characters so far
-            </p>
-            <progress />
-          </>
-        )}
-
-        {phase.kind === "done" && (
-          <>
-            <p>
-              Done. Transcribed {phase.summary.page_count}{" "}
-              {phase.summary.page_count === 1 ? "page" : "pages"} (
-              {phase.summary.char_count} characters) using{" "}
-              <code>{phase.summary.model}</code>.
-            </p>
-            <div className="actions">
-              <button className="primary" onClick={onCancel}>
-                Close
               </button>
             </div>
           </>

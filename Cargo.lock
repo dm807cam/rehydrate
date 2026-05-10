@@ -6944,6 +6944,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "hex",
+ "hf-hub",
  "image",
  "imageproc",
  "mistralrs",

@@ -383,6 +383,85 @@ textarea {
   );
   animation: barSlide 1.4s linear infinite;
 }
+
+/* Floating progress chip for background OCR jobs. Sits at the
+ * bottom-right where it doesn't compete with the top-right toaster
+ * and stays visible while the user navigates the rest of the app. */
+.ocr-chip {
+  position: fixed;
+  bottom: var(--space-4);
+  right: var(--space-4);
+  z-index: 199;
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: 10px 12px 10px 14px;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-2);
+  min-width: 280px;
+  max-width: 380px;
+  animation: chipIn var(--motion-base) var(--ease);
+}
+.ocr-chip-bar {
+  position: relative;
+  width: 56px;
+  height: 6px;
+  background: var(--bg-sunken);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill);
+  overflow: hidden;
+  flex-shrink: 0;
+}
+.ocr-chip-bar > span.indeterminate {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    var(--accent),
+    transparent
+  );
+  animation: barSlide 1.4s linear infinite;
+}
+.ocr-chip-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1;
+  min-width: 0;
+}
+.ocr-chip-text strong {
+  font-size: var(--text-sm);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ocr-chip-close {
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 4px;
+}
+.ocr-chip-close:hover {
+  color: var(--text);
+}
+@keyframes chipIn {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
 .muted.small {
   font-size: var(--text-xs);
 }

@@ -73,22 +73,42 @@ fn current_descriptor() -> OcrModelDescriptor {
 #[derive(Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum OcrStatusReport {
+    /// Weights are not in the HF cache; the user has to start a
+    /// multi-GB download.
     Missing { descriptor: OcrModelDescriptor },
+    /// Weights are on disk but the backend isn't loaded into
+    /// memory yet. The OCR dialog can skip the download prompt
+    /// and go straight to a quick load step.
+    Cached { descriptor: OcrModelDescriptor },
+    /// Backend is loaded and can transcribe immediately.
     Ready { descriptor: OcrModelDescriptor },
 }
 
 #[tauri::command]
 pub async fn ocr_status(state: State<'_, AppState>) -> Result<OcrStatusReport, String> {
     let descriptor = current_descriptor();
-    // Active backend is "Mock" until a real model loads. After
-    // `ocr_download_default_model` succeeds the slot holds a
-    // MistralRsBackend whose name starts with "mistralrs/".
-    let name = state.ocr_backend.read().await.name().to_string();
-    if name.starts_with("mistralrs/") {
-        Ok(OcrStatusReport::Ready { descriptor })
-    } else {
-        Ok(OcrStatusReport::Missing { descriptor })
+    // Three-way status. Active backend slot starts as `Mock` on
+    // every app launch and is replaced with `MistralRsBackend`
+    // once `ocr_download_default_model` finishes loading. So
+    // "is the backend ready" is purely an in-process question.
+    // "Has the user already downloaded the weights" needs a disk
+    // check — without it, every relaunch looks like a fresh first
+    // run and the user gets prompted to redownload 6 GB they
+    // already have.
+    let backend_loaded = state
+        .ocr_backend
+        .read()
+        .await
+        .name()
+        .starts_with("mistralrs/");
+    if backend_loaded {
+        return Ok(OcrStatusReport::Ready { descriptor });
     }
+    #[cfg(feature = "ocr-runtime")]
+    if rehydrate_ocr::MistralRsBackend::is_cached(default_model_id()) {
+        return Ok(OcrStatusReport::Cached { descriptor });
+    }
+    Ok(OcrStatusReport::Missing { descriptor })
 }
 
 /// Load (and download, if first run) the default vision-LLM and
@@ -96,11 +116,14 @@ pub async fn ocr_status(state: State<'_, AppState>) -> Result<OcrStatusReport, S
 /// `transcribe_document` IPC will route through the real model
 /// instead of the Mock placeholder.
 ///
-/// First-run downloads weights from HuggingFace via mistral.rs's
-/// hf-hub client (multi-GB, several minutes). We fire a
-/// `download_progress` event when load starts and `download_done`
-/// when it returns; mistral.rs doesn't currently expose byte-level
-/// progress so the UI shows an indeterminate spinner in between.
+/// Two-phase: (1) drive the HF download ourselves through hf-hub's
+/// `download_with_progress`, streaming byte-level progress over
+/// `ocr:progress`; (2) fire a `model_loading` event and hand off
+/// to mistral.rs, which now hits the local cache and only pays
+/// the mmap+ISQ cost. Splitting the phases is what gives the UI
+/// something specific to render across the multi-minute setup —
+/// the prior single-load call left the dialog on an indeterminate
+/// spinner for the whole 60 minutes the user reported.
 #[tauri::command]
 pub async fn ocr_download_default_model(
     app: AppHandle,
@@ -117,14 +140,71 @@ pub async fn ocr_download_default_model(
 
     #[cfg(feature = "ocr-runtime")]
     {
-        // Up-front "download started" event so the dialog flips to
-        // the indeterminate-progress phase immediately.
-        let _ = app.emit(
-            "ocr:progress",
-            &OcrProgressEvent::DownloadProgress { done: 0, total: None },
-        );
-
         let model_id = default_model_id().to_string();
+
+        // No-op fast path: if a previous call in this process
+        // already loaded the backend, there's nothing to do. The
+        // dialog can call this repeatedly without re-loading.
+        let already_loaded = state
+            .ocr_backend
+            .read()
+            .await
+            .name()
+            .starts_with("mistralrs/");
+        if already_loaded {
+            let _ = app.emit("ocr:progress", &OcrProgressEvent::DownloadDone);
+            return Ok(());
+        }
+
+        // Cached fast path: weights are on disk from a previous
+        // session. Skip the download phase entirely, jump straight
+        // to the load phase. This is the common path on every app
+        // relaunch after the first successful download — without
+        // it, the user gets re-prompted to download the same 6 GB
+        // every launch.
+        let cached = rehydrate_ocr::MistralRsBackend::is_cached(&model_id);
+
+        if !cached {
+            // Up-front "download started" event so the dialog leaves
+            // the "missing" screen immediately, even before the first
+            // byte lands.
+            let _ = app.emit(
+                "ocr:progress",
+                &OcrProgressEvent::DownloadProgress { done: 0, total: None },
+            );
+
+            // Forward byte-level download progress from the blocking
+            // hf-hub thread to the renderer.
+            let (tx, mut rx) = mpsc::channel::<OcrProgressEvent>(32);
+            let app_for_emit = app.clone();
+            let forwarder = tauri::async_runtime::spawn(async move {
+                while let Some(ev) = rx.recv().await {
+                    let _ = app_for_emit.emit("ocr:progress", &ev);
+                }
+            });
+
+            let model_id_for_dl = model_id.clone();
+            let dl_tx = tx.clone();
+            let download = tauri::async_runtime::spawn_blocking(move || {
+                rehydrate_ocr::MistralRsBackend::download_blocking(&model_id_for_dl, Some(dl_tx))
+            });
+            // Drop our copy of the sender so the forwarder exits when
+            // the download task drops its.
+            drop(tx);
+            download
+                .await
+                .map_err(|e| format!("download task failed: {e}"))?
+                .map_err(|e| format!("model download failed: {e}"))?;
+            let _ = forwarder.await;
+        }
+
+        // Distinct phase: weights are on disk, but the runtime
+        // still has to map the safetensors and apply ISQ-Q4 (AFQ4
+        // on Metal, Q4K on CUDA). On a consumer M1 the ISQ pass
+        // alone takes 1–3 minutes; without this event the dialog
+        // has nothing to render across that window.
+        let _ = app.emit("ocr:progress", &OcrProgressEvent::ModelLoading);
+
         let backend = rehydrate_ocr::MistralRsBackend::load(&model_id)
             .await
             .map_err(|e| format!("model load failed: {e}"))?;

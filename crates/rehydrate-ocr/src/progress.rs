@@ -22,9 +22,16 @@ pub enum OcrProgressEvent {
         pages_done: usize,
         total_chars: usize,
     },
-    /// Model download is in flight. `total` may be `None` if the
-    /// server didn't return a Content-Length.
+    /// Model download is in flight. `total` is the sum of file sizes
+    /// for the repo's snapshot; `done` is bytes copied to disk so far.
+    /// `total` may still be `None` if the metadata probe couldn't
+    /// determine sizes — the UI then falls back to indeterminate.
     DownloadProgress { done: u64, total: Option<u64> },
-    /// Model download finished; the runtime is ready to serve.
+    /// Bytes are on disk; the runtime is now mapping the safetensors
+    /// shards and applying ISQ. Surfaces a distinct UI phase from the
+    /// download itself, since this step alone takes minutes on a
+    /// consumer machine and otherwise looks like a hang.
+    ModelLoading,
+    /// Model is fully loaded into memory and ready to serve.
     DownloadDone,
 }

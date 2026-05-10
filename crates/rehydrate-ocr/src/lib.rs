@@ -27,10 +27,13 @@ pub use page_render::render_rm_to_png;
 pub use progress::OcrProgressEvent;
 
 /// Public default model identifier surfaced to the IPC layer. With
-/// the `mistral` feature this is the HuggingFace repo ID for
-/// Qwen2.5-VL-7B-Instruct, which mistral.rs downloads via hf-hub.
-/// Without the feature this is a stable string the UI can show
-/// while the runtime itself is unavailable.
+/// the `mistral` feature this is the HuggingFace repo ID for the
+/// unquantized Qwen2.5-VL-3B-Instruct. Runtime ISQ-Q4 (AFQ4 on
+/// Metal, Q4K on CUDA) brings resident memory down to ~2 GB but
+/// the user still pays ~6 GB on the first download — no
+/// pre-quantized variant of this model loads correctly on Apple
+/// Silicon via mistral.rs today (the official AWQ build needs
+/// CUDA kernels, and no AFQ build is published).
 pub fn default_model_id() -> &'static str {
     #[cfg(feature = "mistral")]
     {
@@ -38,7 +41,7 @@ pub fn default_model_id() -> &'static str {
     }
     #[cfg(not(feature = "mistral"))]
     {
-        "Qwen/Qwen2.5-VL-7B-Instruct"
+        "Qwen/Qwen2.5-VL-3B-Instruct"
     }
 }
 
@@ -46,8 +49,8 @@ pub fn default_model_id() -> &'static str {
 /// only to size progress bars in the UI before any download
 /// reports an actual Content-Length.
 pub fn default_model_size_hint() -> u64 {
-    // Qwen2.5-VL-7B-Instruct safetensors total ≈ 16 GB. ISQ-Q4
-    // quant happens at load time, so the user pays the full
+    // Qwen2.5-VL-3B-Instruct safetensors total ≈ 6 GB across two
+    // shards. ISQ runs at load time, so the user pays the full
     // download cost once.
-    16_000_000_000
+    6_000_000_000
 }

@@ -13,11 +13,16 @@ description = "reHydrate OCR layer: vision-LLM transcript pipeline (model store 
 # Metal compile cost. `rehydrate-app`'s default features turn it on
 # for the user-facing binary.
 default = []
-mistral = ["dep:mistralrs", "dep:anyhow"]
+mistral = ["dep:mistralrs", "dep:anyhow", "dep:hf-hub"]
 
 [dependencies]
 anyhow = { workspace = true, optional = true }
 async-trait = { workspace = true }
+# `hf-hub` is already pulled into the dep graph by `mistralrs`. Wiring it
+# in here directly (same major) lets us drive our own per-file
+# `download_with_progress` so the UI shows real byte progress instead of
+# the silent download mistral.rs's hf-hub integration emits to stderr.
+hf-hub = { version = "0.4", optional = true, default-features = false, features = ["ureq"] }
 hex = { workspace = true }
 image = { workspace = true }
 imageproc = "0.25"

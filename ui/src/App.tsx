@@ -7,10 +7,11 @@ import {
   type DragEvent as ReactDragEvent,
   type ReactNode,
 } from "react";
-import { ipc, onDeviceReachable } from "./ipc";
+import { ipc, onDeviceReachable, onOcrProgress } from "./ipc";
 import { HistoryDrawer } from "./components/HistoryDrawer";
 import { LogDrawer } from "./components/LogDrawer";
 import { OcrDialog } from "./components/OcrDialog";
+import { OcrJobChip, type OcrJob } from "./components/OcrJobChip";
 import { PasswordDialog } from "./components/PasswordDialog";
 import { PublishingSettings } from "./components/PublishingSettings";
 import { TranscriptDrawer } from "./components/TranscriptDrawer";
@@ -75,6 +76,12 @@ export function App() {
   const [showPalette, setShowPalette] = useState(false);
   const [showOnboarding, setShowOnboarding] = useState(false);
   const [ocrDoc, setOcrDoc] = useState<DocumentSummary | null>(null);
+  // App-level OCR job state. Lives outside the OcrDialog so closing
+  // the dialog mid-OCR doesn't lose progress visibility — the
+  // floating `OcrJobChip` keeps the user informed and the
+  // completion toast offers a "View transcript" shortcut.
+  const [ocrJob, setOcrJob] = useState<OcrJob | null>(null);
+  const [ocrJobElapsed, setOcrJobElapsed] = useState(0);
   const [transcriptDoc, setTranscriptDoc] = useState<DocumentSummary | null>(
     null,
   );
@@ -152,6 +159,43 @@ export function App() {
       if (unlisten) unlisten();
     };
   }, []);
+
+  // ---- Background OCR progress ----------------------------------------
+  // Single global listener for `ocr:progress`. Updates the
+  // App-level `ocrJob` whenever a job is in flight. Stays mounted
+  // for the App's lifetime so the chip keeps updating no matter
+  // which dialog/drawer the user has open.
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    onOcrProgress((ev) => {
+      setOcrJob((cur) => {
+        if (!cur || cur.phase !== "running") return cur;
+        if (ev.kind === "page_done") {
+          return {
+            ...cur,
+            pagesDone: ev.page_index + 1,
+            charCount: cur.charCount + ev.chars,
+          };
+        }
+        return cur;
+      });
+    }).then((u) => {
+      unlisten = u;
+    });
+    return () => {
+      if (unlisten) unlisten();
+    };
+  }, []);
+
+  // Tick the elapsed-time counter while a job is running.
+  useEffect(() => {
+    if (!ocrJob || ocrJob.phase !== "running") return;
+    const tick = () =>
+      setOcrJobElapsed((Date.now() - ocrJob.startedAt) / 1000);
+    tick();
+    const id = window.setInterval(tick, 500);
+    return () => window.clearInterval(id);
+  }, [ocrJob]);
 
   // ---- Refresh ---------------------------------------------------------
   const refreshLibrary = useCallback(async () => {
@@ -1007,6 +1051,97 @@ export function App() {
     filteredDocs,
   ]);
 
+  // ---- OCR background job ---------------------------------------------
+  // Kicks off a transcribe IPC, tracks its in-flight state in the
+  // App-level chip, and on completion fires a toast with a "View"
+  // shortcut. The dialog calls this and then dismisses itself —
+  // the user is free to keep using the rest of the app.
+  const startOcrJob = useCallback(
+    (doc: DocumentSummary, language: string | undefined) => {
+      // Replace any prior finished/errored job with a fresh one.
+      // Concurrent OCR jobs aren't supported (single backend, single
+      // request at a time on the IPC layer); if a job is already
+      // running we surface a toast and bail rather than queueing.
+      setOcrJob((cur) => {
+        if (cur && cur.phase === "running") {
+          toast.show({
+            tone: "warn",
+            body: `Already transcribing "${cur.visibleName}" — wait for that to finish first.`,
+          });
+          return cur;
+        }
+        return {
+          documentId: doc.document_id,
+          visibleName: doc.visible_name,
+          phase: "running",
+          pagesDone: 0,
+          charCount: 0,
+          startedAt: Date.now(),
+        };
+      });
+
+      // Fire-and-forget the IPC call. We don't await it inside the
+      // synchronous setOcrDoc closure; instead we track the Promise
+      // result here so settlement can fire the appropriate toast.
+      void (async () => {
+        try {
+          const summary = await ipc.transcribeDocument(doc.document_id, language);
+          setOcrJob((cur) =>
+            cur && cur.documentId === doc.document_id
+              ? {
+                  ...cur,
+                  phase: "done",
+                  pagesDone: summary.page_count,
+                  charCount: summary.char_count,
+                  totalPages: summary.page_count,
+                }
+              : cur,
+          );
+          // Surface the result with a one-click route into the
+          // transcript drawer. Library refresh in parallel so the
+          // version_id badge updates.
+          await refreshLibrary();
+          toast.show({
+            tone: "ok",
+            duration: 8000,
+            body: (
+              <>
+                Transcribed <strong>{doc.visible_name}</strong> —{" "}
+                {summary.page_count}{" "}
+                {summary.page_count === 1 ? "page" : "pages"},{" "}
+                {summary.char_count.toLocaleString()} characters.
+              </>
+            ),
+            action: {
+              label: "View",
+              onClick: () => setTranscriptDoc(doc),
+            },
+          });
+          // Hide the chip once acknowledged via the toast (or after
+          // the toast itself clears).
+          setOcrJob(null);
+        } catch (e) {
+          setOcrJob((cur) =>
+            cur && cur.documentId === doc.document_id
+              ? { ...cur, phase: "error", error: String(e) }
+              : cur,
+          );
+          toast.show({
+            tone: "err",
+            duration: 0,
+            body: (
+              <>
+                OCR failed for <strong>{doc.visible_name}</strong>: {String(e)}
+              </>
+            ),
+          });
+          setOcrJob(null);
+        }
+      })();
+    },
+    [refreshLibrary, toast],
+  );
+
   // ---- Render -----------------------------------------------------------
   return (
     <div className="app">
@@ -1432,12 +1567,22 @@ export function App() {
         <OcrDialog
           document={ocrDoc}
           onCancel={() => setOcrDoc(null)}
-          onDone={() => {
-            // After a fresh transcript lands, refresh the library so
-            // the new version_id surfaces and the transcript drawer
-            // can read it on next open.
-            refreshLibrary();
+          onStart={(language) => {
+            // Hand the job off to App-level state and close the
+            // dialog. The user is free to keep working; progress
+            // shows up in the floating chip and the completion
+            // toast will offer a "View" shortcut.
+            const doc = ocrDoc;
+            setOcrDoc(null);
+            startOcrJob(doc, language);
           }}
+        />
+      )}
+      {ocrJob && ocrJob.phase === "running" && (
+        <OcrJobChip
+          job={ocrJob}
+          elapsedSeconds={ocrJobElapsed}
+          onDismiss={() => setOcrJob(null)}
         />
       )}
       {transcriptDoc && (
