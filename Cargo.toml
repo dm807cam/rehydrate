@@ -28,7 +28,7 @@ publish = false
 [workspace.dependencies]
 anyhow = "1"
 async-trait = "0.1"
-directories = "5"
+directories = "6"
 futures = "0.3"
 hex = "0.4"
 keyring = "3"
