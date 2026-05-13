@@ -50,7 +50,7 @@ jobs:
     name: macOS (Apple Silicon)
     runs-on: [self-hosted, macOS, ARM64]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
