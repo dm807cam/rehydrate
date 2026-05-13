@@ -126,7 +126,7 @@ jobs:
       # so a downstream tag move can't quietly change our release path.
       - name: Build and release
         id: tauri
-        uses: tauri-apps/tauri-action@v0.5.20
+        uses: tauri-apps/tauri-action@v0.6.2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
