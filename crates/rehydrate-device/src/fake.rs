@@ -13,6 +13,7 @@
 //!   <uuid>/<page-uuid>.rm
 //! ```
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use async_trait::async_trait;
@@ -126,7 +127,8 @@ impl Device for FakeDevice {
         Ok(out)
     }
 
-    async fn put_document_tree(&self, _uuid: &str, files: &[RemoteFile]) -> DeviceResult<()> {
+    async fn put_document_tree(&self, uuid: &str, files: &[RemoteFile]) -> DeviceResult<()> {
+        let desired: HashSet<String> = files.iter().map(|f| f.path.clone()).collect();
         for f in files {
             let target = self.root.join(&f.path);
             if let Some(parent) = target.parent() {
@@ -140,7 +142,14 @@ impl Device for FakeDevice {
             tokio::fs::write(&tmp, &f.bytes).await?;
             tokio::fs::rename(&tmp, &target).await?;
         }
-        Ok(())
+        // Issue #22: `put_document_tree` is a true replace — any
+        // pre-existing `<uuid>*` artefact that's NOT in the new
+        // manifest must be removed. Without this, restoring an older
+        // version (or pushing one with removed pages/sidecars) leaves
+        // stale `.rm` / `.pagedata` / thumbnail files for xochitl, and
+        // a later pull re-ingests them and corrupts the restored
+        // version. Mirrors `SshDevice::put_document_tree`.
+        reap_extras(&self.root, uuid, &desired).await
     }
 
     async fn delete_document_tree(&self, uuid: &str) -> DeviceResult<()> {
@@ -226,6 +235,131 @@ impl Device for FakeDevice {
     }
 }
 
+/// Remove every `<uuid>*` artefact under `root` that isn't in `desired`.
+/// Returns the first non-NotFound error encountered, mirroring the
+/// SSH path's "first error wins" reporting so the caller can surface
+/// it without losing its kind.
+async fn reap_extras(root: &Path, uuid: &str, desired: &HashSet<String>) -> DeviceResult<()> {
+    let prefix = format!("{uuid}.");
+    let mut rd = match tokio::fs::read_dir(root).await {
+        Ok(r) => r,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(e.into()),
+    };
+    let mut first_err: Option<DeviceError> = None;
+    let mut subdirs: Vec<(PathBuf, String)> = Vec::new();
+    while let Some(entry) = rd.next_entry().await? {
+        let name = entry.file_name();
+        let name_str = name.to_string_lossy().to_string();
+        if name_str != uuid && !name_str.starts_with(&prefix) {
+            continue;
+        }
+        let path = entry.path();
+        let meta = match tokio::fs::symlink_metadata(&path).await {
+            Ok(m) => m,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(e) => {
+                if first_err.is_none() {
+                    first_err = Some(e.into());
+                }
+                continue;
+            }
+        };
+        if meta.is_dir() {
+            subdirs.push((path, name_str));
+        } else if !desired.contains(&name_str) {
+            if let Err(e) = tokio::fs::remove_file(&path).await {
+                if e.kind() != std::io::ErrorKind::NotFound && first_err.is_none() {
+                    first_err = Some(e.into());
+                }
+            }
+        }
+    }
+    for (dir_path, rel_root) in subdirs {
+        match reap_subtree(&dir_path, &rel_root, desired).await {
+            Ok(true) => {
+                if let Err(e) = tokio::fs::remove_dir(&dir_path).await {
+                    if e.kind() != std::io::ErrorKind::NotFound && first_err.is_none() {
+                        first_err = Some(e.into());
+                    }
+                }
+            }
+            Ok(false) => {}
+            Err(e) => {
+                if first_err.is_none() {
+                    first_err = Some(e);
+                }
+            }
+        }
+    }
+    match first_err {
+        Some(e) => Err(e),
+        None => Ok(()),
+    }
+}
+
+/// Recurse into a `<uuid>*` directory, deleting files not in `desired`
+/// and removing now-empty subdirectories. Returns `true` when the
+/// directory itself ended up empty, so the caller can rmdir it.
+async fn reap_subtree(dir: &Path, rel_root: &str, desired: &HashSet<String>) -> DeviceResult<bool> {
+    let mut rd = tokio::fs::read_dir(dir).await?;
+    let mut remaining = 0usize;
+    let mut first_err: Option<DeviceError> = None;
+    while let Some(entry) = rd.next_entry().await? {
+        let path = entry.path();
+        let name = entry.file_name();
+        let name_str = name.to_string_lossy().to_string();
+        let rel_path = format!("{rel_root}/{name_str}");
+        let meta = match tokio::fs::symlink_metadata(&path).await {
+            Ok(m) => m,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(e) => {
+                if first_err.is_none() {
+                    first_err = Some(e.into());
+                }
+                remaining += 1;
+                continue;
+            }
+        };
+        if meta.is_dir() {
+            match Box::pin(reap_subtree(&path, &rel_path, desired)).await {
+                Ok(true) => {
+                    if let Err(e) = tokio::fs::remove_dir(&path).await {
+                        if e.kind() != std::io::ErrorKind::NotFound {
+                            if first_err.is_none() {
+                                first_err = Some(e.into());
+                            }
+                            remaining += 1;
+                        }
+                    }
+                }
+                Ok(false) => {
+                    remaining += 1;
+                }
+                Err(e) => {
+                    if first_err.is_none() {
+                        first_err = Some(e);
+                    }
+                    remaining += 1;
+                }
+            }
+        } else if desired.contains(&rel_path) {
+            remaining += 1;
+        } else if let Err(e) = tokio::fs::remove_file(&path).await {
+            if e.kind() != std::io::ErrorKind::NotFound {
+                if first_err.is_none() {
+                    first_err = Some(e.into());
+                }
+                remaining += 1;
+            }
+        }
+    }
+    match first_err {
+        Some(e) => Err(e),
+        None => Ok(remaining == 0),
+    }
+}
+
 async fn collect_dir(
     base: &Path,
     cur: &Path,
@@ -282,6 +416,77 @@ mod tests {
         assert_eq!(doc.doc_type, "DocumentType.Pdf");
         let folder = entries.iter().find(|e| e.uuid == "folder-1").unwrap();
         assert_eq!(folder.kind, RemoteEntryKind::Folder);
+    }
+
+    #[tokio::test]
+    async fn put_document_tree_reaps_extras_not_in_manifest() {
+        // Issue #22 regression: a previous push left `<uuid>*` artefacts
+        // (extra sidecars, an extra page file, a stale thumbnail) on the
+        // device. Re-pushing with a smaller manifest must remove every
+        // artefact not present in the new file set; otherwise xochitl
+        // keeps serving the stale files and the next pull re-ingests
+        // them.
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+
+        // Pre-seed a "previous version" of doc-1 with an extra sidecar,
+        // an extra page, and an extra thumbnail.
+        fs::write(root.join("doc-1.metadata"), b"OLD-METADATA").unwrap();
+        fs::write(root.join("doc-1.content"), b"OLD-CONTENT").unwrap();
+        fs::write(root.join("doc-1.pagedata"), b"OLD-PAGEDATA").unwrap();
+        fs::create_dir(root.join("doc-1")).unwrap();
+        fs::write(root.join("doc-1").join("page-a.rm"), b"OLD-A").unwrap();
+        fs::write(root.join("doc-1").join("page-stale.rm"), b"OLD-STALE").unwrap();
+        fs::create_dir(root.join("doc-1.thumbnails")).unwrap();
+        fs::write(
+            root.join("doc-1.thumbnails").join("page-stale.jpg"),
+            b"OLD-THUMB",
+        )
+        .unwrap();
+        // An unrelated document — must be untouched by a doc-1 push.
+        fs::write(root.join("doc-2.metadata"), b"OTHER").unwrap();
+
+        let dev = FakeDevice::new(root);
+        let new_files = vec![
+            RemoteFile {
+                path: "doc-1.metadata".into(),
+                bytes: b"NEW-METADATA".to_vec(),
+                mode: 0o644,
+            },
+            RemoteFile {
+                path: "doc-1.content".into(),
+                bytes: b"NEW-CONTENT".to_vec(),
+                mode: 0o644,
+            },
+            RemoteFile {
+                path: "doc-1/page-a.rm".into(),
+                bytes: b"NEW-A".to_vec(),
+                mode: 0o644,
+            },
+        ];
+        dev.put_document_tree("doc-1", &new_files).await.unwrap();
+
+        // Files in the new manifest land with the new bytes.
+        assert_eq!(
+            fs::read(root.join("doc-1.metadata")).unwrap(),
+            b"NEW-METADATA"
+        );
+        assert_eq!(
+            fs::read(root.join("doc-1.content")).unwrap(),
+            b"NEW-CONTENT"
+        );
+        assert_eq!(
+            fs::read(root.join("doc-1").join("page-a.rm")).unwrap(),
+            b"NEW-A"
+        );
+
+        // Stale artefacts not in the new manifest are gone.
+        assert!(!root.join("doc-1.pagedata").exists());
+        assert!(!root.join("doc-1").join("page-stale.rm").exists());
+        assert!(!root.join("doc-1.thumbnails").exists());
+
+        // Unrelated document is untouched.
+        assert_eq!(fs::read(root.join("doc-2.metadata")).unwrap(), b"OTHER");
     }
 
     #[tokio::test]

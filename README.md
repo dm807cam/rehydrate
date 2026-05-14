@@ -71,12 +71,13 @@ v1.1. Until then, macOS warns on first launch:
   Intel Macs are not shipped as binaries; building from source
   on Intel works but is not part of CI. Linux / Windows builds
   from source — no bundles.
-- **Tablet:** reMarkable 2, with the stock firmware (xochitl) on
-  version 3.x. v1.0 has been tested against firmware 3.11 → 3.20.
-  The reMarkable Paper Pro and reMarkable 1 are **not currently
-  supported** — the Paper Pro because its tablet-side schema
-  introduced new files reHydrate doesn't yet parse, the rM 1
-  because of differing protocol semantics.
+- **Tablet:** the reMarkable 2 on stock firmware (xochitl) is the
+  only tablet reHydrate has been directly tested against — v1.0
+  against firmware 3.11 → 3.20. The reMarkable Paper Pro and
+  reMarkable 1 are untested: the Paper Pro's tablet-side schema
+  introduced new files reHydrate doesn't yet parse, and the rM 1
+  has differing protocol semantics, so both will likely need work
+  before they function end-to-end.
 - **OCR (optional):** [Ollama][ollama] 0.6+ on the same machine or
   a reachable LAN host, with at least one vision-language model
   pulled (default `qwen3.5:4b`, ~3.4 GB on disk). Without Ollama

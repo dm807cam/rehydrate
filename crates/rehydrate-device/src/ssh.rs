@@ -12,6 +12,7 @@
 //! through a `Mutex`. That's plenty fast over USB-ethernet — the bottleneck
 //! is the device, not concurrency.
 
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -676,7 +677,8 @@ impl Device for SshDevice {
         Ok(out)
     }
 
-    async fn put_document_tree(&self, _uuid: &str, files: &[RemoteFile]) -> DeviceResult<()> {
+    async fn put_document_tree(&self, uuid: &str, files: &[RemoteFile]) -> DeviceResult<()> {
+        let desired: HashSet<String> = files.iter().map(|f| f.path.clone()).collect();
         let inner = self.inner.lock().await;
         let dir = self.cfg.xochitl_dir.clone();
 
@@ -706,6 +708,17 @@ impl Device for SshDevice {
                 return Err(e);
             }
         }
+
+        // Phase 3: issue #22 — `put_document_tree` is a true replace.
+        // Enumerate any pre-existing `<uuid>*` artefact on the device
+        // that is NOT in the new manifest and remove it. Without this,
+        // restoring an older version (or pushing one with removed pages
+        // / sidecars) leaves stale `.rm` / `.pagedata` / thumbnail
+        // files in xochitl, and a later pull re-ingests them and
+        // corrupts the restored version. Returning Err keeps sync_state
+        // un-advanced so the next push retries the reap; both staging
+        // and reaping are idempotent.
+        reap_extras(&inner.sftp, &dir, uuid, &desired).await?;
 
         drop(inner);
 
@@ -983,6 +996,163 @@ async fn fetch_subtree_named(
         }
     }
     Ok(())
+}
+
+/// Issue #22: remove every `<uuid>*` artefact under `xochitl_dir` that
+/// is NOT in the `desired` set, so `put_document_tree` behaves as a
+/// true replace. Mirrors `FakeDevice::reap_extras`. The first
+/// non-NotFound failure is returned so the caller can leave sync state
+/// un-advanced and retry on the next push.
+async fn reap_extras(
+    sftp: &SftpSession,
+    xochitl_dir: &str,
+    uuid: &str,
+    desired: &HashSet<String>,
+) -> DeviceResult<()> {
+    let prefix = format!("{uuid}.");
+    let entries = with_timeout("reap_extras.read_dir", async {
+        sftp.read_dir(xochitl_dir)
+            .await
+            .map_err(|e| sftp_err("read_dir", xochitl_dir, e))
+    })
+    .await?;
+
+    let mut first_err: Option<DeviceError> = None;
+    let mut subdirs: Vec<(String, String)> = Vec::new();
+    for entry in entries {
+        let name = entry.file_name();
+        if name == "." || name == ".." {
+            continue;
+        }
+        if name != uuid && !name.starts_with(&prefix) {
+            continue;
+        }
+        let path = format!("{xochitl_dir}/{name}");
+        if entry.file_type().is_dir() {
+            subdirs.push((path, name));
+        } else if !desired.contains(&name) {
+            if let Err(e) = with_timeout("reap_extras.remove_file", async {
+                sftp.remove_file(&path)
+                    .await
+                    .map_err(|e| sftp_err("remove_file", &path, e))
+            })
+            .await
+            {
+                if !matches!(e, DeviceError::NotFound(_)) && first_err.is_none() {
+                    first_err = Some(e);
+                }
+            }
+        }
+    }
+    for (dir_path, rel_root) in subdirs {
+        match reap_subtree(sftp, &dir_path, &rel_root, desired, 0).await {
+            Ok(true) => {
+                if let Err(e) = with_timeout("reap_extras.remove_dir", async {
+                    sftp.remove_dir(&dir_path)
+                        .await
+                        .map_err(|e| sftp_err("remove_dir", &dir_path, e))
+                })
+                .await
+                {
+                    if !matches!(e, DeviceError::NotFound(_)) && first_err.is_none() {
+                        first_err = Some(e);
+                    }
+                }
+            }
+            Ok(false) => {}
+            Err(e) => {
+                if !matches!(e, DeviceError::NotFound(_)) && first_err.is_none() {
+                    first_err = Some(e);
+                }
+            }
+        }
+    }
+    match first_err {
+        Some(e) => Err(e),
+        None => Ok(()),
+    }
+}
+
+/// Recurse into a `<uuid>*` directory, deleting files not in `desired`
+/// and rmdir-ing now-empty subdirectories. Returns `true` when this
+/// directory itself is empty and the caller can rmdir it. Bounded by
+/// [`MAX_SUBTREE_DEPTH`] to mirror `fetch_subtree_named`.
+async fn reap_subtree(
+    sftp: &SftpSession,
+    dev_dir: &str,
+    rel_root: &str,
+    desired: &HashSet<String>,
+    depth: usize,
+) -> DeviceResult<bool> {
+    if depth > MAX_SUBTREE_DEPTH {
+        return Err(DeviceError::Other(format!(
+            "reap_subtree depth exceeds {MAX_SUBTREE_DEPTH} at {dev_dir}"
+        )));
+    }
+    let entries = with_timeout("reap_subtree.read_dir", async {
+        sftp.read_dir(dev_dir)
+            .await
+            .map_err(|e| sftp_err("read_dir", dev_dir, e))
+    })
+    .await?;
+    let mut remaining = 0usize;
+    let mut first_err: Option<DeviceError> = None;
+    for entry in entries {
+        let name = entry.file_name();
+        if name == "." || name == ".." {
+            continue;
+        }
+        let dev_path = format!("{dev_dir}/{name}");
+        let rel_path = format!("{rel_root}/{name}");
+        if entry.file_type().is_dir() {
+            match Box::pin(reap_subtree(sftp, &dev_path, &rel_path, desired, depth + 1)).await {
+                Ok(true) => {
+                    if let Err(e) = with_timeout("reap_subtree.remove_dir", async {
+                        sftp.remove_dir(&dev_path)
+                            .await
+                            .map_err(|e| sftp_err("remove_dir", &dev_path, e))
+                    })
+                    .await
+                    {
+                        if !matches!(e, DeviceError::NotFound(_)) {
+                            if first_err.is_none() {
+                                first_err = Some(e);
+                            }
+                            remaining += 1;
+                        }
+                    }
+                }
+                Ok(false) => {
+                    remaining += 1;
+                }
+                Err(e) => {
+                    if !matches!(e, DeviceError::NotFound(_)) && first_err.is_none() {
+                        first_err = Some(e);
+                    }
+                    remaining += 1;
+                }
+            }
+        } else if desired.contains(&rel_path) {
+            remaining += 1;
+        } else if let Err(e) = with_timeout("reap_subtree.remove_file", async {
+            sftp.remove_file(&dev_path)
+                .await
+                .map_err(|e| sftp_err("remove_file", &dev_path, e))
+        })
+        .await
+        {
+            if !matches!(e, DeviceError::NotFound(_)) {
+                if first_err.is_none() {
+                    first_err = Some(e);
+                }
+                remaining += 1;
+            }
+        }
+    }
+    match first_err {
+        Some(e) => Err(e),
+        None => Ok(remaining == 0),
+    }
 }
 
 async fn read_path(sftp: &SftpSession, path: &str) -> DeviceResult<Vec<u8>> {
