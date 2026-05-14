@@ -12,7 +12,7 @@ async-trait = { workspace = true }
 base64 = "0.22"
 hex = { workspace = true }
 image = { workspace = true }
-imageproc = "0.25"
+imageproc = "0.26"
 rm-parser = { path = "../rm-parser" }
 # Host-pinned, redirect-refusing ureq agent + URL safety check.
 # Lives in its own crate so the privacy invariants are enforced in
