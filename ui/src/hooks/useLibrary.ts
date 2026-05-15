@@ -12,12 +12,17 @@
 // confirm dialog, all of which would make the hook's surface
 // unfocused. They consume the hook's setters directly.
 //
-// `refreshing` is a `useRef` boolean that short-circuits concurrent
-// refreshes. The four IPC calls inside `refreshLibrary` are
-// independent (`Promise.all`) but a second `refreshLibrary` while
-// the first is mid-flight would just double the work and risk
-// out-of-order setState. The guard sidesteps that without any
-// debouncing or queueing complexity.
+// Concurrency: `refreshing` marks an in-flight refresh and
+// `pendingRefresh` is a single-slot "queue another one after this
+// finishes" flag. Most refresh calls fire right after an `await ipc.X()`
+// (rename, archive, reorder, multi-select toolbar actions), so a
+// second call while one is mid-flight is usually the *load-bearing*
+// one — its results reflect the write the user just made. Dropping
+// it (issue #38) left the UI showing pre-write state until the next
+// user action triggered another refresh. The single-slot debounce
+// guarantees the last requested refresh always completes after the
+// most recent write, without queueing an unbounded number of
+// in-flights.
 
 import { useCallback, useRef, useState } from "react";
 
@@ -55,9 +60,12 @@ export interface UseLibraryResult {
   >;
   setFolders: React.Dispatch<React.SetStateAction<FolderEntry[]>>;
   setArchived: React.Dispatch<React.SetStateAction<ArchivedDocument[]>>;
-  /// Refetch all four content lists in parallel. Idempotent under
-  /// concurrent calls — the second invocation returns immediately
-  /// while the first is in flight.
+  /// Refetch all four content lists in parallel. Safe under
+  /// concurrent calls: a second invocation arriving mid-flight
+  /// queues a single re-fetch that runs as soon as the in-flight
+  /// one finishes (issue #38 — the second call usually IS the
+  /// load-bearing one, since it's typically issued right after a
+  /// write IPC returns).
   refreshLibrary: () => Promise<void>;
   /// Refetch only the recents list. Non-fatal on failure — the
   /// switcher just keeps showing whatever it had.
@@ -88,25 +96,48 @@ export function useLibrary(injections: UseLibraryInjections): UseLibraryResult {
   const [archived, setArchived] = useState<ArchivedDocument[]>([]);
 
   const refreshing = useRef(false);
+  // Issue #38: if a second refreshLibrary() arrives while the first
+  // is mid-flight, flip this slot and let the in-flight refresh
+  // re-run once it completes. Single-slot — a third concurrent call
+  // collapses with the second, so we re-run at most once after the
+  // latest in-flight finishes.
+  const pendingRefresh = useRef(false);
 
   const refreshLibrary = useCallback(async () => {
-    if (refreshing.current) return;
+    if (refreshing.current) {
+      pendingRefresh.current = true;
+      return;
+    }
     refreshing.current = true;
     try {
-      const [s, d, f, a] = await Promise.all([
-        ipc.librarySummary(),
-        ipc.listDocuments(),
-        ipc.listFolders(),
-        ipc.listArchived(),
-      ]);
-      setSummary(s);
-      setDocuments(d);
-      setFolders(f);
-      setArchived(a);
+      // Loop until no further refresh has been requested mid-flight.
+      // Clearing `pendingRefresh` BEFORE the fetch (not after) means
+      // any call that arrives between the fetch and the setState
+      // batch sets the flag again and we'll round-trip once more —
+      // so the last call's IPC results are guaranteed to be the
+      // ones rendered.
+      while (true) {
+        pendingRefresh.current = false;
+        const [s, d, f, a] = await Promise.all([
+          ipc.librarySummary(),
+          ipc.listDocuments(),
+          ipc.listFolders(),
+          ipc.listArchived(),
+        ]);
+        setSummary(s);
+        setDocuments(d);
+        setFolders(f);
+        setArchived(a);
+        if (!pendingRefresh.current) break;
+      }
     } catch (e) {
       injectionsRef.current.setError(formatError(e));
     } finally {
       refreshing.current = false;
+      // Drop any queued refresh on error — the user has been shown
+      // the failure and can retry explicitly. Looping after an
+      // error would either re-fire the same failure or mask it.
+      pendingRefresh.current = false;
     }
   }, []);
 
