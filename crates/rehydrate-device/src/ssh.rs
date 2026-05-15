@@ -330,6 +330,19 @@ impl SshDevice {
         let mut stranded = Vec::new();
         for entry in entries {
             let name = entry.file_name();
+            // Issue #33: refuse non-leaf entry names from the SFTP
+            // server (`..`, embedded slashes, etc.). See
+            // `crate::is_safe_entry_name`. Skip + warn rather than
+            // error — this scan is best-effort observability, not
+            // a load-bearing operation.
+            if !crate::is_safe_entry_name(&name) {
+                tracing::warn!(
+                    parent = %dir,
+                    entry = %name,
+                    "device sent a non-leaf entry name; skipping (issue #33)",
+                );
+                continue;
+            }
             let Some(live_name) = name.strip_suffix(".rehydrate-bak") else {
                 continue;
             };
@@ -613,6 +626,19 @@ impl Device for SshDevice {
         let mut out = Vec::new();
         for entry in entries {
             let name = entry.file_name();
+            // Issue #33: defence-in-depth at the SFTP boundary. A
+            // device that returned `../etc/passwd.metadata` would
+            // strip-suffix cleanly to `../etc/passwd` and we'd then
+            // open `{xochitl}/../etc/passwd.metadata` — outside the
+            // document tree. See `crate::is_safe_entry_name`.
+            if !crate::is_safe_entry_name(&name) {
+                tracing::warn!(
+                    parent = %dir,
+                    entry = %name,
+                    "device sent a non-leaf entry name in list_documents; skipping (issue #33)",
+                );
+                continue;
+            }
             let Some(uuid) = name.strip_suffix(".metadata") else {
                 continue;
             };
@@ -753,6 +779,20 @@ impl Device for SshDevice {
         let mut sibling_dirs: Vec<String> = Vec::new();
         for e in entries {
             let name = e.file_name();
+            // Issue #33: refuse non-leaf entry names from the SFTP
+            // server. Without this gate a `uuid.../etc/shadow` entry
+            // would pass the prefix check below (`starts_with(prefix)`)
+            // and the `remove_file` loop would attempt destructive
+            // ops outside the document tree. See
+            // `crate::is_safe_entry_name`.
+            if !crate::is_safe_entry_name(&name) {
+                tracing::warn!(
+                    parent = %dir,
+                    entry = %name,
+                    "device sent a non-leaf entry name in delete_document_tree; skipping (issue #33)",
+                );
+                continue;
+            }
             // Match both the bare uuid (the per-document directory)
             // and any `<uuid>.<ext>` sidecar (`.metadata`, `.content`,
             // `.pagedata`, `.local`, `.thumbnails/`, …).
@@ -823,7 +863,16 @@ impl Device for SshDevice {
             };
             for e in inner_entries.into_iter().flatten() {
                 let name = e.file_name();
-                if name == "." || name == ".." {
+                // Issue #33: defence-in-depth at the SFTP boundary.
+                // The pre-existing `.`/`..` filter handled the
+                // obvious cases; tightening to a full leaf-component
+                // check catches embedded slashes / backslashes too.
+                if !crate::is_safe_entry_name(&name) {
+                    tracing::warn!(
+                        parent = %dir_path,
+                        entry = %name,
+                        "device sent a non-leaf entry name in delete subdir; skipping (issue #33)",
+                    );
                     continue;
                 }
                 let path = format!("{dir_path}/{name}");
@@ -887,6 +936,21 @@ impl Device for SshDevice {
         .await?;
         for entry in entries {
             let name = entry.file_name();
+            // Issue #33: defence-in-depth at the SFTP boundary.
+            // Without this gate, a device that returned an entry
+            // like `<uuid>.../etc/passwd` would pass the
+            // `starts_with(uuid.)` prefix check below, and
+            // `read_path({dir}/<uuid>.../etc/passwd)` would read
+            // off-tree on the device AND smuggle the bad path
+            // into `RemoteFile.path` for the manifest.
+            if !crate::is_safe_entry_name(&name) {
+                tracing::warn!(
+                    parent = %dir,
+                    entry = %name,
+                    "device sent a non-leaf entry name in fetch_document_tree; skipping (issue #33)",
+                );
+                continue;
+            }
             if !name.starts_with(&format!("{uuid}.")) {
                 continue;
             }
@@ -968,6 +1032,21 @@ async fn fetch_subtree_named(
         .await?;
         for entry in entries {
             let name = entry.file_name();
+            // Issue #33: defence-in-depth at the SFTP boundary.
+            // Without this gate, a device that returned an entry
+            // like `../../etc/shadow` would have us `sftp.open()`
+            // that path (escaping xochitl_dir) and smuggle it into
+            // the manifest's `RemoteFile.path`. The symlink check
+            // below catches one shape of escape; this catches the
+            // other.
+            if !crate::is_safe_entry_name(&name) {
+                tracing::warn!(
+                    parent = %dev,
+                    entry = %name,
+                    "device sent a non-leaf entry name in fetch_subtree; skipping (issue #33)",
+                );
+                continue;
+            }
             // Skip symlinks: the device reports `xochitl` straight off the
             // stock filesystem and should not contain symlinks under a
             // document tree, so anything that does is either malicious
