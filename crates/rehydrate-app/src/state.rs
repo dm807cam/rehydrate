@@ -22,6 +22,15 @@ use tokio::sync::{Mutex, RwLock};
 pub struct AppState {
     pub library: Mutex<Option<Arc<Library>>>,
     pub library_path: Mutex<Option<PathBuf>>,
+    /// Path the user explicitly picked through `pick_library_directory`'s
+    /// server-side OS folder picker but has not yet opened. Consumed
+    /// one-shot by `open_library` so the backend can enforce the
+    /// pick → open contract — a renderer-side XSS that calls
+    /// `ipc.openLibrary("/tmp/foo")` without first going through the
+    /// picker hits the allowlist gate and is rejected (issue #36).
+    /// Cleared on consumption, on a subsequent pick that overwrites it,
+    /// or on a successful `open_library` for any allowed source.
+    pub pending_picked_path: Mutex<Option<PathBuf>>,
     pub device: Mutex<Option<Arc<SshDevice>>>,
     pub device_info: RwLock<Option<DeviceInfo>>,
     pub device_reachable: RwLock<bool>,
@@ -73,6 +82,7 @@ impl AppState {
         Self {
             library: Mutex::new(None),
             library_path: Mutex::new(None),
+            pending_picked_path: Mutex::new(None),
             device: Mutex::new(None),
             device_info: RwLock::new(None),
             device_reachable: RwLock::new(false),

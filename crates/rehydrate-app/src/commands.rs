@@ -128,7 +128,62 @@ pub struct TwoWayReport {
 
 #[tauri::command]
 pub async fn open_library(path: PathBuf, state: State<'_, AppState>) -> Result<(), String> {
-    open_library_at(&path, &state).await
+    // Allowlist gate (issue #36). `switch_library` already requires the
+    // target to be in `recent_libraries`; `open_library` was the only
+    // remaining entry point that accepted an arbitrary renderer-supplied
+    // path. A renderer XSS that called `ipc.openLibrary("/tmp/foo")`
+    // would stamp a fresh library at any path, persist it to
+    // config.json, and have `auto_open_library` silently re-open the
+    // attacker-chosen path on next launch — shadowing the user's real
+    // library. The legitimate user-driven flows are (1) accepting the
+    // default-dir suggestion from the welcome screen and (2) running
+    // the server-side OS folder picker; gate on those two plus the
+    // existing recents allowlist. The pending-pick slot is one-shot:
+    // a successful open consumes it so a stale token can't be replayed.
+    let cfg = config::load();
+    let mut pending = state.pending_picked_path.lock().await;
+    let allowed = is_allowed_open_path(&path, &cfg.recent_libraries, pending.as_deref());
+    if !allowed {
+        return Err(format!(
+            "{} is not an approved library path; use 'Open another library…' to pick it first",
+            path.display()
+        ));
+    }
+    let was_pending_match = pending.as_deref() == Some(path.as_path());
+    open_library_at(&path, &state).await?;
+    if was_pending_match {
+        *pending = None;
+    }
+    Ok(())
+}
+
+/// Return true iff `path` is allowed as an `open_library` target —
+/// extracted so the gate logic can be exercised by a unit test without
+/// constructing a Tauri runtime. The three legitimate sources:
+/// 1. The path the user just confirmed in the server-side OS picker
+///    (`pending`, consumed one-shot by the caller on success).
+/// 2. Any path the user has previously opened (`recents`), since each
+///    of those once went through (1) before being recorded.
+/// 3. The cross-platform default library dir, so the welcome-screen
+///    "use defaults" button works on first launch when recents is
+///    empty and the user has not yet engaged the picker.
+fn is_allowed_open_path(
+    path: &std::path::Path,
+    recents: &[crate::config::RecentLibrary],
+    pending: Option<&std::path::Path>,
+) -> bool {
+    if pending == Some(path) {
+        return true;
+    }
+    if recents.iter().any(|r| r.path == path) {
+        return true;
+    }
+    if let Some(default) = crate::state::default_library_dir() {
+        if default == path {
+            return true;
+        }
+    }
+    false
 }
 
 /// Common path-validated open used by `open_library`, `switch_library`,
@@ -213,6 +268,7 @@ pub async fn switch_library(path: PathBuf, state: State<'_, AppState>) -> Result
 #[tauri::command]
 pub async fn pick_library_directory(
     app: AppHandle,
+    state: State<'_, AppState>,
 ) -> Result<Option<PickedLibraryDirectory>, String> {
     let app_for_pick = app.clone();
     let picked = tauri::async_runtime::spawn_blocking(move || {
@@ -240,6 +296,10 @@ pub async fn pick_library_directory(
         Ok(rehydrate_core::LibraryPathKind::Existing) => PickedLibraryKind::Existing,
         Err(e) => return Err(err(e)),
     };
+    // Mark this path as user-approved for one subsequent `open_library`
+    // (issue #36). Overwrites any previous pending pick so the latest
+    // user intent wins. `open_library` consumes the slot on success.
+    *state.pending_picked_path.lock().await = Some(path.clone());
     Ok(Some(PickedLibraryDirectory { path, kind }))
 }
 
@@ -1619,4 +1679,113 @@ pub fn spawn_reachability_watcher(app: AppHandle) {
             });
         })
         .expect("spawn reachability watcher thread");
+}
+
+#[cfg(test)]
+mod open_library_allowlist_tests {
+    use super::is_allowed_open_path;
+    use crate::config::RecentLibrary;
+    use std::path::{Path, PathBuf};
+
+    fn rec(path: &str) -> RecentLibrary {
+        RecentLibrary {
+            path: PathBuf::from(path),
+            label: "test".into(),
+            last_opened: String::new(),
+        }
+    }
+
+    /// Issue #36 regression: the bare-minimum attack shape. With no
+    /// recents and no pending pick, an arbitrary renderer path must
+    /// be refused. The default-dir allowance is intentionally narrow
+    /// (`default_library_dir()` is the cross-platform default and is
+    /// host-machine-dependent), so this test picks `/tmp/attacker`
+    /// which is never the default.
+    #[test]
+    fn arbitrary_path_with_no_recents_no_pending_is_rejected() {
+        let recents: Vec<RecentLibrary> = vec![];
+        assert!(!is_allowed_open_path(
+            Path::new("/tmp/attacker"),
+            &recents,
+            None,
+        ));
+    }
+
+    /// The path the user just confirmed in the server-side OS picker
+    /// is allowed. This is the post-`pick_library_directory` happy
+    /// path that the renderer hits via `openAnotherLibrary` in
+    /// `App.tsx`.
+    #[test]
+    fn pending_pick_path_is_allowed() {
+        let recents: Vec<RecentLibrary> = vec![];
+        let pending = PathBuf::from("/Users/test/MyLib");
+        assert!(is_allowed_open_path(
+            &pending,
+            &recents,
+            Some(pending.as_path()),
+        ));
+    }
+
+    /// A different path while a pick is pending must still be refused
+    /// — the pending slot only authorises the exact path it points at,
+    /// not "any path while a pick happens to be pending."
+    #[test]
+    fn pending_pick_does_not_authorise_a_different_path() {
+        let recents: Vec<RecentLibrary> = vec![];
+        let pending = PathBuf::from("/Users/test/MyLib");
+        assert!(!is_allowed_open_path(
+            Path::new("/tmp/attacker"),
+            &recents,
+            Some(pending.as_path()),
+        ));
+    }
+
+    /// Recents are the persisted form of "user previously approved
+    /// this." A path on the recents list is allowed even with no
+    /// active pending pick — covers the welcome screen re-opening a
+    /// known library and `switch_library`'s equivalent gate.
+    #[test]
+    fn recents_path_is_allowed_without_pending() {
+        let recents = vec![rec("/Users/test/PriorLib")];
+        assert!(is_allowed_open_path(
+            Path::new("/Users/test/PriorLib"),
+            &recents,
+            None,
+        ));
+    }
+
+    /// A path that *looks* similar to a recents entry but isn't byte-
+    /// equal must NOT match. Sibling-directory escape is the obvious
+    /// attack shape: if recents contains `/Users/test/Lib`, an open
+    /// against `/Users/test/Lib2` or `/Users/test/Lib/../Other` must
+    /// fall through to the deny branch. (Renderer-sent paths aren't
+    /// canonicalised here; the picker round-trip preserves whatever
+    /// the OS returned, so byte-equality is the right comparison.)
+    #[test]
+    fn near_miss_recents_path_is_rejected() {
+        let recents = vec![rec("/Users/test/Lib")];
+        assert!(!is_allowed_open_path(
+            Path::new("/Users/test/Lib2"),
+            &recents,
+            None,
+        ));
+        assert!(!is_allowed_open_path(
+            Path::new("/Users/test/Lib/../Other"),
+            &recents,
+            None,
+        ));
+    }
+
+    /// The default library dir is always allowed (welcome-screen
+    /// "use defaults" button on first launch). Skip if the test host
+    /// has no resolvable default — CI on the self-hosted macOS runner
+    /// always does, but unit tests should still be portable.
+    #[test]
+    fn default_library_dir_is_allowed() {
+        let Some(default) = crate::state::default_library_dir() else {
+            return;
+        };
+        let recents: Vec<RecentLibrary> = vec![];
+        assert!(is_allowed_open_path(&default, &recents, None));
+    }
 }
