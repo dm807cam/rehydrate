@@ -365,6 +365,243 @@ mod tests {
         assert_eq!(count, 1, "shared page must be deduplicated");
     }
 
+    /// Issue #17: cover "updated doc" — the device-side metadata
+    /// changes between two pulls and the library must record a new
+    /// version. Pre-existing `clean_pull_records_versions_and_dedupes`
+    /// only covers New + Unchanged, leaving the Changed→record path
+    /// (the most common steady-state pull shape) untested.
+    #[tokio::test]
+    async fn pull_records_a_new_version_when_device_metadata_changes() {
+        let dev_root = tempfile::tempdir().unwrap();
+        let lib_root = tempfile::tempdir().unwrap();
+        // Initial pull: visibleName = "Original" with mtime hint 100.
+        seed_fake_doc(dev_root.path(), "doc-x", "Original", b"page-v1");
+        let lib = rehydrate_core::Library::open(lib_root.path()).unwrap();
+        let dev = FakeDevice::new(dev_root.path());
+
+        let plan = crate::plan::plan_pull(&lib, &dev).await.unwrap();
+        execute_pull(&lib, &dev, plan, None, Cancel::default())
+            .await
+            .unwrap();
+        let history_before = lib.get_history("doc-x").unwrap();
+        assert_eq!(history_before.len(), 1, "first pull records v1");
+
+        // Device-side edit: rename + bump mtime so plan_pull
+        // classifies as Changed (not Unchanged).
+        fs::write(
+            dev_root.path().join("doc-x.metadata"),
+            r#"{"visibleName":"Renamed","type":"DocumentType","lastModified":"200"}"#,
+        )
+        .unwrap();
+
+        let plan2 = crate::plan::plan_pull(&lib, &dev).await.unwrap();
+        assert_eq!(plan2.items.len(), 1);
+        assert!(
+            matches!(plan2.items[0].status, PlanItemStatus::Changed),
+            "device-side mtime bump must surface as Changed, got {:?}",
+            plan2.items[0].status,
+        );
+        let report = execute_pull(&lib, &dev, plan2, None, Cancel::default())
+            .await
+            .unwrap();
+        assert_eq!(report.recorded, 1, "edited doc must be recorded");
+
+        // The history must now have TWO versions, chained by
+        // parent_version_id. Without this assertion a future
+        // regression that overwrote in place (instead of appending)
+        // would silently lose the v1 snapshot the user could revert
+        // to.
+        let history_after = lib.get_history("doc-x").unwrap();
+        assert_eq!(history_after.len(), 2, "edited doc must accrue a v2");
+        assert_eq!(
+            history_after[1].parent_version_id,
+            Some(history_after[0].id),
+            "v2 must chain back to v1's id",
+        );
+
+        // The library's current view should show the renamed doc.
+        let live = lib.list_documents().unwrap();
+        let entry = live.iter().find(|d| d.document_id == "doc-x").unwrap();
+        assert_eq!(entry.visible_name, "Renamed");
+    }
+
+    /// Issue #17: cover "deleted-on-tablet doc" — the device-deletion
+    /// sweep at the bottom of execute_pull moves docs the device no
+    /// longer reports into archived_documents with
+    /// ArchiveReason::Device. A regression here would silently lose
+    /// the user's device-side delete intent (they removed it on the
+    /// tablet but the library keeps showing it as live).
+    #[tokio::test]
+    async fn pull_archives_a_doc_the_device_no_longer_reports() {
+        let dev_root = tempfile::tempdir().unwrap();
+        let lib_root = tempfile::tempdir().unwrap();
+        seed_fake_doc(dev_root.path(), "doc-a", "Will Survive", b"a");
+        seed_fake_doc(dev_root.path(), "doc-b", "Will Vanish", b"b");
+        let lib = rehydrate_core::Library::open(lib_root.path()).unwrap();
+        let dev = FakeDevice::new(dev_root.path());
+
+        // Initial pull picks up both.
+        let plan = crate::plan::plan_pull(&lib, &dev).await.unwrap();
+        execute_pull(&lib, &dev, plan, None, Cancel::default())
+            .await
+            .unwrap();
+        assert_eq!(lib.list_documents().unwrap().len(), 2);
+
+        // Remove doc-b from the device — every sidecar and its
+        // per-uuid directory. Mirrors xochitl's actual on-device
+        // delete shape.
+        let _ = fs::remove_file(dev_root.path().join("doc-b.metadata"));
+        let _ = fs::remove_file(dev_root.path().join("doc-b.content"));
+        let _ = fs::remove_dir_all(dev_root.path().join("doc-b"));
+
+        // Pull again. plan_pull sees only doc-a; execute's sweep at
+        // the bottom of the function archives doc-b.
+        let plan2 = crate::plan::plan_pull(&lib, &dev).await.unwrap();
+        assert_eq!(plan2.items.len(), 1, "only doc-a is listed");
+        execute_pull(&lib, &dev, plan2, None, Cancel::default())
+            .await
+            .unwrap();
+
+        // Post-state: doc-a is still live, doc-b is in archived.
+        let live: Vec<_> = lib
+            .list_documents()
+            .unwrap()
+            .into_iter()
+            .map(|d| d.document_id)
+            .collect();
+        assert_eq!(live, vec!["doc-a".to_string()]);
+        assert!(lib.is_archived("doc-b").unwrap());
+        let archived = lib.list_archived().unwrap();
+        let b = archived.iter().find(|a| a.document_id == "doc-b").unwrap();
+        assert!(
+            matches!(b.reason, rehydrate_core::ArchiveReason::Device),
+            "device-side delete must surface as ArchiveReason::Device, got {:?}",
+            b.reason,
+        );
+    }
+
+    /// Issue #17: cover the truncated-listing safety guard. An SFTP
+    /// server bug, a TCP hiccup, or an auth path that lost the
+    /// directory handle can return an empty NAME list on a library
+    /// that previously had many docs. Without the guard the
+    /// device-deletion sweep would mass-archive every doc the user
+    /// has — a single bad listing would shred the library. The
+    /// engine refuses to sweep when the device returns zero and the
+    /// library has ≥ 4 previously-synced docs.
+    #[tokio::test]
+    async fn pull_truncated_listing_does_not_mass_archive_a_populated_library() {
+        let dev_root = tempfile::tempdir().unwrap();
+        let lib_root = tempfile::tempdir().unwrap();
+        // Seed at least 4 docs so we trip the >=4-prior-count guard.
+        for i in 0..4 {
+            seed_fake_doc(
+                dev_root.path(),
+                &format!("doc-{i}"),
+                &format!("Doc {i}"),
+                format!("page-{i}").as_bytes(),
+            );
+        }
+        let lib = rehydrate_core::Library::open(lib_root.path()).unwrap();
+        let dev = FakeDevice::new(dev_root.path());
+
+        let plan = crate::plan::plan_pull(&lib, &dev).await.unwrap();
+        execute_pull(&lib, &dev, plan, None, Cancel::default())
+            .await
+            .unwrap();
+        assert_eq!(lib.list_documents().unwrap().len(), 4);
+
+        // Wipe every doc from the device — simulates a truncated
+        // listing (we asked the user to pretend their SFTP server
+        // momentarily returned an empty NAME list). The plan sees
+        // zero docs.
+        for i in 0..4 {
+            let _ = fs::remove_file(dev_root.path().join(format!("doc-{i}.metadata")));
+            let _ = fs::remove_file(dev_root.path().join(format!("doc-{i}.content")));
+            let _ = fs::remove_dir_all(dev_root.path().join(format!("doc-{i}")));
+        }
+        let plan2 = crate::plan::plan_pull(&lib, &dev).await.unwrap();
+        assert!(
+            plan2.items.is_empty(),
+            "empty device listing should produce an empty plan",
+        );
+        execute_pull(&lib, &dev, plan2, None, Cancel::default())
+            .await
+            .unwrap();
+
+        // Critical assertion: the library MUST still report all 4
+        // docs as live. A regression that removed the truncation
+        // guard would surface here as zero live + all archived.
+        assert_eq!(
+            lib.list_documents().unwrap().len(),
+            4,
+            "truncated listing on a populated library must NOT trigger the device-deletion sweep",
+        );
+        assert!(
+            lib.list_archived().unwrap().is_empty(),
+            "no doc should have been archived from the truncated listing",
+        );
+    }
+
+    /// Issue #17: cover the local-archive + device-still-has-it
+    /// case. The user archived a doc locally; the device still
+    /// reports it. `plan_pull` must classify the entry as Skipped
+    /// with a clear reason rather than queue it for transfer (which
+    /// would re-resurrect via `record_version` — which itself now
+    /// rejects via the issue #31 DocumentArchived gate, so the
+    /// resurrection would convert to a skipped count, but the
+    /// plan-level skip is the cleaner contract). A regression
+    /// removing the `is_archived` check in plan_pull would surface
+    /// here as Changed/New instead of Skipped.
+    #[tokio::test]
+    async fn plan_pull_skips_locally_archived_docs() {
+        let dev_root = tempfile::tempdir().unwrap();
+        let lib_root = tempfile::tempdir().unwrap();
+        seed_fake_doc(dev_root.path(), "doc-1", "Doc One", b"page");
+        let lib = rehydrate_core::Library::open(lib_root.path()).unwrap();
+        let dev = FakeDevice::new(dev_root.path());
+
+        // Initial pull → archive locally.
+        let plan = crate::plan::plan_pull(&lib, &dev).await.unwrap();
+        execute_pull(&lib, &dev, plan, None, Cancel::default())
+            .await
+            .unwrap();
+        lib.archive_document("doc-1", rehydrate_core::ArchiveReason::Local)
+            .unwrap();
+        assert!(lib.is_archived("doc-1").unwrap());
+
+        // Pull again — plan_pull must mark the doc Skipped.
+        let plan2 = crate::plan::plan_pull(&lib, &dev).await.unwrap();
+        assert_eq!(plan2.items.len(), 1);
+        let item = &plan2.items[0];
+        assert_eq!(item.entry.uuid, "doc-1");
+        assert!(
+            matches!(item.status, PlanItemStatus::Skipped),
+            "locally-archived doc must be Skipped, got {:?}",
+            item.status,
+        );
+        assert!(
+            item.reason.as_deref() == Some("archived locally"),
+            "skip reason must be informative, got {:?}",
+            item.reason,
+        );
+
+        // And executing the plan must NOT remove the archive entry.
+        execute_pull(&lib, &dev, plan2, None, Cancel::default())
+            .await
+            .unwrap();
+        assert!(
+            lib.is_archived("doc-1").unwrap(),
+            "archive entry must survive the pull",
+        );
+        assert!(
+            lib.list_documents()
+                .unwrap()
+                .iter()
+                .all(|d| d.document_id != "doc-1"),
+            "archived doc must NOT appear in list_documents after the pull",
+        );
+    }
+
     /// Tiny dir walker used only by tests so we don't need a separate dev-dep.
     mod walkdir {
         use std::path::{Path, PathBuf};
