@@ -1713,33 +1713,82 @@ impl Library {
         manifest.files = vec![
             ManifestFile {
                 path: format!("{document_id}.metadata"),
-                sha256: metadata_put.hash,
+                sha256: metadata_put.hash.clone(),
                 size: metadata_put.size,
                 mode: 0o644,
                 derived: false,
             },
             ManifestFile {
                 path: format!("{document_id}.content"),
-                sha256: content_put.hash,
+                sha256: content_put.hash.clone(),
                 size: content_put.size,
                 mode: 0o644,
                 derived: false,
             },
             ManifestFile {
                 path: format!("{document_id}.{}", body_kind.extension()),
-                sha256: body_put.hash,
+                sha256: body_put.hash.clone(),
                 size: body_put.size,
                 mode: 0o644,
                 derived: false,
             },
         ];
 
-        let outcome = self.record_version(&manifest, Source::Imported)?;
+        self.finalize_import(
+            manifest,
+            body_put,
+            metadata_put,
+            content_put,
+            visible_name,
+            now,
+        )
+    }
+
+    /// Record an imported document's manifest as a new version, or
+    /// unlink the freshly-staged blobs if the recording fails.
+    ///
+    /// Issue #39: without the unlink, three blobs (body / metadata /
+    /// content) sit unreferenced on disk for the 60 s GC grace window
+    /// after `record_version` errors (db busy timeout after retries,
+    /// the archived-vs-import gate from #31, a serialization error,
+    /// …). If the user closes the app inside that window the dropped
+    /// PDF/EPUB is silently lost — recoverable in principle by
+    /// inspecting `blobs/` but the user has no clue where the bytes
+    /// went. Proactively `fs::remove_file` each Stored blob in the
+    /// Err branch so the post-state is binary: either the import is
+    /// recorded, or no on-disk trace of it remains. Deduplicated
+    /// puts are skipped — the bytes were already there before this
+    /// call and some other manifest references them. Unlink is
+    /// best-effort because GC's grace still reaps any blob we fail
+    /// to remove; surfacing the unlink error would mask the
+    /// underlying record_version failure the caller actually needs
+    /// to see.
+    fn finalize_import(
+        &self,
+        manifest: Manifest,
+        body_put: crate::blob::PutResult,
+        metadata_put: crate::blob::PutResult,
+        content_put: crate::blob::PutResult,
+        visible_name: &str,
+        now: String,
+    ) -> Result<DocumentSummary> {
+        let outcome = match self.record_version(&manifest, Source::Imported) {
+            Ok(o) => o,
+            Err(e) => {
+                for put in [&body_put, &metadata_put, &content_put] {
+                    if matches!(put.outcome, crate::blob::PutOutcome::Stored) {
+                        let path = self.blobs.path_for(&put.hash);
+                        let _ = std::fs::remove_file(&path);
+                    }
+                }
+                return Err(e);
+            }
+        };
 
         Ok(DocumentSummary {
-            document_id,
+            document_id: manifest.document_id,
             visible_name: visible_name.to_string(),
-            doc_type: body_kind.doc_type().to_string(),
+            doc_type: manifest.doc_type,
             current_manifest: outcome.manifest_hash,
             current_version_id: outcome.version_id,
             last_observed_at: now,
@@ -2883,6 +2932,7 @@ fn prune_empty_dirs(root: &Path) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::blob::PutOutcome;
     use crate::manifest::ManifestFile;
 
     fn seed_blob(lib: &Library, bytes: &[u8]) -> Sha256Hex {
@@ -3068,6 +3118,191 @@ mod tests {
         // not been pushed yet, so plan_push should treat it as outbound.
         let last_seen = lib.last_seen(&summary.document_id).unwrap();
         assert!(matches!(last_seen, Some((_, None)) | None));
+    }
+
+    #[test]
+    fn finalize_import_unlinks_staged_blobs_when_record_version_fails() {
+        // Issue #39 regression. import_file stages body / metadata /
+        // content blobs *before* calling record_version. Pre-fix, a
+        // record_version failure left those blobs unreferenced on
+        // disk for the 60 s GC grace — if the user closed the app
+        // inside that window the dropped file vanished. The contract
+        // now: on record_version Err, every Stored put from this
+        // call is fs::remove_file'd before the error returns, so the
+        // post-state is binary (either recorded, or no trace).
+        //
+        // To force a record_version failure deterministically we
+        // exploit the #31 archive-vs-pull gate: pre-archive a doc
+        // with id X, then call finalize_import with a manifest
+        // whose document_id == X. record_version's DocumentArchived
+        // branch fires and the cleanup must run.
+        let tmp = tempfile::tempdir().unwrap();
+        let lib = Library::open(tmp.path()).unwrap();
+
+        // Set up the archived doc that will collide with our import's
+        // document_id and trigger DocumentArchived.
+        let pre = seed_manifest(&lib, "doc-collide", &[("a.rm", b"page")]);
+        lib.record_version(&pre, Source::Pulled).unwrap();
+        lib.archive_document("doc-collide", ArchiveReason::Local)
+            .unwrap();
+
+        // Stage three blobs as if we were inside import_file. Distinct
+        // bytes so each hash is unique and not aliased with anything
+        // the pre-archived doc references.
+        let body_put = lib.put_blob(b"BODY-import-bytes-39-unique").unwrap();
+        let meta_put = lib.put_blob(b"META-import-bytes-39-unique-too").unwrap();
+        let content_put = lib.put_blob(b"CONTENT-import-bytes-39-unique").unwrap();
+        assert!(matches!(body_put.outcome, PutOutcome::Stored));
+        assert!(matches!(meta_put.outcome, PutOutcome::Stored));
+        assert!(matches!(content_put.outcome, PutOutcome::Stored));
+        let body_path = lib.blobs().path_for(&body_put.hash);
+        let meta_path = lib.blobs().path_for(&meta_put.hash);
+        let content_path = lib.blobs().path_for(&content_put.hash);
+        assert!(body_path.exists());
+        assert!(meta_path.exists());
+        assert!(content_path.exists());
+
+        // Build an import-shaped manifest that record_version will
+        // reject via the archived-doc gate.
+        let mut manifest = Manifest::new("doc-collide", "DocumentType.Pdf", "name");
+        manifest.files = vec![
+            ManifestFile {
+                path: "doc-collide.metadata".into(),
+                sha256: meta_put.hash.clone(),
+                size: meta_put.size,
+                mode: 0o644,
+                derived: false,
+            },
+            ManifestFile {
+                path: "doc-collide.content".into(),
+                sha256: content_put.hash.clone(),
+                size: content_put.size,
+                mode: 0o644,
+                derived: false,
+            },
+            ManifestFile {
+                path: "doc-collide.pdf".into(),
+                sha256: body_put.hash.clone(),
+                size: body_put.size,
+                mode: 0o644,
+                derived: false,
+            },
+        ];
+
+        let err = lib
+            .finalize_import(
+                manifest,
+                body_put.clone(),
+                meta_put.clone(),
+                content_put.clone(),
+                "name",
+                "now".into(),
+            )
+            .expect_err("archived-doc gate must reject this import");
+        assert!(
+            matches!(err, CoreError::DocumentArchived(ref id) if id == "doc-collide"),
+            "wanted DocumentArchived, got {err:?}",
+        );
+
+        // The three staged blobs must be gone — that's the whole
+        // point of the fix.
+        assert!(
+            !body_path.exists(),
+            "Stored body blob must be unlinked after a failed import",
+        );
+        assert!(
+            !meta_path.exists(),
+            "Stored metadata blob must be unlinked after a failed import",
+        );
+        assert!(
+            !content_path.exists(),
+            "Stored content blob must be unlinked after a failed import",
+        );
+    }
+
+    #[test]
+    fn finalize_import_keeps_deduplicated_blobs_on_failure() {
+        // Issue #39 boundary: a Deduplicated put means the bytes
+        // were already in the store before this call — some other
+        // manifest references them. We must NOT unlink those, or a
+        // failed import would shred unrelated documents' data. Only
+        // Stored puts (which were newly written by this call) are
+        // safe to remove on failure.
+        let tmp = tempfile::tempdir().unwrap();
+        let lib = Library::open(tmp.path()).unwrap();
+
+        // A pre-existing doc that already references some bytes.
+        // Its .metadata content is what we'll dedup against below.
+        let pre = seed_manifest(&lib, "doc-collide", &[("a.rm", b"page")]);
+        lib.record_version(&pre, Source::Pulled).unwrap();
+        let preexisting_meta_hash = pre
+            .files
+            .iter()
+            .find(|f| f.path.ends_with(".metadata"))
+            .unwrap()
+            .sha256
+            .clone();
+        let preexisting_meta_bytes = lib.read_blob(&preexisting_meta_hash).unwrap();
+        lib.archive_document("doc-collide", ArchiveReason::Local)
+            .unwrap();
+
+        // Stage 3 blobs — but make the metadata bytes IDENTICAL to
+        // the pre-existing doc's metadata so put_blob dedups it.
+        let body_put = lib.put_blob(b"BODY-39-keep-on-failure").unwrap();
+        let meta_put = lib.put_blob(&preexisting_meta_bytes).unwrap();
+        let content_put = lib.put_blob(b"CONTENT-39-keep-on-failure").unwrap();
+        assert!(matches!(meta_put.outcome, PutOutcome::Deduplicated));
+        let meta_path = lib.blobs().path_for(&meta_put.hash);
+
+        let mut manifest = Manifest::new("doc-collide", "DocumentType.Pdf", "name");
+        manifest.files = vec![
+            ManifestFile {
+                path: "doc-collide.metadata".into(),
+                sha256: meta_put.hash.clone(),
+                size: meta_put.size,
+                mode: 0o644,
+                derived: false,
+            },
+            ManifestFile {
+                path: "doc-collide.content".into(),
+                sha256: content_put.hash.clone(),
+                size: content_put.size,
+                mode: 0o644,
+                derived: false,
+            },
+            ManifestFile {
+                path: "doc-collide.pdf".into(),
+                sha256: body_put.hash.clone(),
+                size: body_put.size,
+                mode: 0o644,
+                derived: false,
+            },
+        ];
+
+        let _ = lib
+            .finalize_import(
+                manifest,
+                body_put.clone(),
+                meta_put.clone(),
+                content_put.clone(),
+                "name",
+                "now".into(),
+            )
+            .expect_err("archived-doc gate must reject");
+
+        // The deduplicated metadata blob is still referenced by the
+        // pre-archived doc; must NOT be unlinked.
+        assert!(
+            meta_path.exists(),
+            "Deduplicated blob must survive a failed import — it belongs to another manifest",
+        );
+        // Sanity: the pre-archived doc's manifest can still resolve
+        // its metadata.
+        let still_readable = lib.read_blob(&preexisting_meta_hash);
+        assert!(
+            still_readable.is_ok(),
+            "pre-existing doc's metadata blob must still be readable after the failed import: {still_readable:?}",
+        );
     }
 
     #[test]
