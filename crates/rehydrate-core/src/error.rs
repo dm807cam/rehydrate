@@ -49,6 +49,14 @@ pub enum CoreError {
     /// returns this rather than silently clobbering the file.
     #[error("destination already exists: {0}")]
     AlreadyExists(String),
+
+    /// Caller tried to record a new live version for a document that
+    /// is currently in `archived_documents`. The sync engine treats
+    /// this as a per-document skip (the user's archive wins over the
+    /// in-flight pull); unarchive first to re-record. See library.rs
+    /// `record_version` for the archive-vs-pull race this guards.
+    #[error("document {0} is archived; unarchive before recording a new version")]
+    DocumentArchived(String),
 }
 
 pub type Result<T> = std::result::Result<T, CoreError>;
