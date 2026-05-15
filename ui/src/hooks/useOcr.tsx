@@ -87,6 +87,11 @@ export function useOcr(injections: UseOcrInjections): UseOcrResult {
   // side. One subscription for the hook's lifetime so the chip keeps
   // updating regardless of which dialog/drawer the user has open.
   useEffect(() => {
+    // Issue #37: close the unmount-before-resolve race. Without the
+    // `cancelled` flag, an OCR job firing after this hook's host
+    // unmounts (library swap, user navigation) would keep calling
+    // setOcrJob on dead state forever.
+    let cancelled = false;
     let unlisten: (() => void) | undefined;
     onOcrProgress((ev) => {
       setOcrJob((cur) => {
@@ -117,10 +122,12 @@ export function useOcr(injections: UseOcrInjections): UseOcrResult {
         return cur;
       });
     }).then((u) => {
-      unlisten = u;
+      if (cancelled) u();
+      else unlisten = u;
     });
     return () => {
-      if (unlisten) unlisten();
+      cancelled = true;
+      unlisten?.();
     };
   }, []);
 

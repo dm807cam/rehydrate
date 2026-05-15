@@ -251,14 +251,22 @@ export function App() {
   // a Linux box without secret-service running). Surface as a toast
   // so the user knows future connects will re-ask for the password.
   useEffect(() => {
+    // Issue #37: a fast unmount-before-resolve would leave the
+    // listener permanently attached and its closure holding setState
+    // refs to an unmounted component. Track `cancelled` so the
+    // promise resolver either installs the unlisten or invokes it
+    // immediately if cleanup has already run.
+    let cancelled = false;
     let unlisten: (() => void) | undefined;
     onKeyringWarning((msg) => {
       toast.show({ tone: "warn", body: msg, duration: 9000 });
     }).then((u) => {
-      unlisten = u;
+      if (cancelled) u();
+      else unlisten = u;
     });
     return () => {
-      if (unlisten) unlisten();
+      cancelled = true;
+      unlisten?.();
     };
   }, [toast]);
 
@@ -268,14 +276,19 @@ export function App() {
   // reconnect just won't have a fingerprint to compare against until
   // the underlying FS/permissions issue is fixed.
   useEffect(() => {
+    // Issue #37: see the keyring-warning effect above for the
+    // unmount-before-resolve race this `cancelled` flag closes.
+    let cancelled = false;
     let unlisten: (() => void) | undefined;
     onHostKeyWarning((msg) => {
       toast.show({ tone: "warn", body: msg, duration: 12000 });
     }).then((u) => {
-      unlisten = u;
+      if (cancelled) u();
+      else unlisten = u;
     });
     return () => {
-      if (unlisten) unlisten();
+      cancelled = true;
+      unlisten?.();
     };
   }, [toast]);
 
@@ -284,14 +297,19 @@ export function App() {
   // preview path. The viewer still opens; we just want the user to
   // understand why the result looks fuzzy.
   useEffect(() => {
+    // Issue #37: see the keyring-warning effect above for the
+    // unmount-before-resolve race this `cancelled` flag closes.
+    let cancelled = false;
     let unlisten: (() => void) | undefined;
     onLegacyFormatWarning((msg) => {
       toast.show({ tone: "info", body: msg, duration: 7000 });
     }).then((u) => {
-      unlisten = u;
+      if (cancelled) u();
+      else unlisten = u;
     });
     return () => {
-      if (unlisten) unlisten();
+      cancelled = true;
+      unlisten?.();
     };
   }, [toast]);
 

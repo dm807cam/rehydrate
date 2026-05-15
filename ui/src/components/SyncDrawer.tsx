@@ -67,6 +67,24 @@ export function SyncDrawer({ onClose, onComplete, onSyncStateChange }: Props) {
   // the success state — the sync still counts as completed.
   const [warnings, setWarnings] = useState<string[]>([]);
   const startedAtRef = useRef<number | null>(null);
+  // Issue #37: SyncDrawer attaches sync-phase / sync-progress
+  // listeners inside the async `start()` flow, and only unlistens
+  // them in the inner `finally`. If the drawer unmounts while
+  // `start()` is mid-`await ipc.syncTwoWay()`, the listeners run
+  // for the duration of the in-flight IPC call against a dead
+  // component, calling setProgress / setPhase on unmounted state
+  // and (in dev StrictMode) doubling the leak. Track every
+  // in-flight unlisten so the component-unmount cleanup below can
+  // detach them too.
+  const inFlightUnlisteners = useRef<Array<() => void>>([]);
+  useEffect(() => {
+    return () => {
+      for (const u of inFlightUnlisteners.current) {
+        u();
+      }
+      inFlightUnlisteners.current = [];
+    };
+  }, []);
 
   // Mirror the drawer's sync state up to the parent. The "failed"
   // branch matters: a sync error used to look indistinguishable from
@@ -165,6 +183,7 @@ export function SyncDrawer({ onClose, onComplete, onSyncStateChange }: Props) {
     startedAtRef.current = Date.now();
 
     const unlistenPhase = await onSyncPhase((p) => setPhase(p));
+    inFlightUnlisteners.current.push(unlistenPhase);
     const unlistenProgress = await onSyncProgress((ev: ProgressEvent) => {
       setProgress((prev) => {
         const next = { ...prev };
@@ -219,6 +238,7 @@ export function SyncDrawer({ onClose, onComplete, onSyncStateChange }: Props) {
         return next;
       });
     });
+    inFlightUnlisteners.current.push(unlistenProgress);
 
     try {
       const r = await ipc.syncTwoWay();
@@ -237,6 +257,12 @@ export function SyncDrawer({ onClose, onComplete, onSyncStateChange }: Props) {
     } finally {
       unlistenPhase();
       unlistenProgress();
+      // Remove from the in-flight set so the component-unmount
+      // cleanup doesn't call them a second time (russh-sftp's
+      // unlisten is idempotent today, but we shouldn't rely on it).
+      inFlightUnlisteners.current = inFlightUnlisteners.current.filter(
+        (u) => u !== unlistenPhase && u !== unlistenProgress,
+      );
       setRunning(false);
       setCancelling(false);
     }
