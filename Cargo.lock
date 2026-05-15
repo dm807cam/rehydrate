@@ -5519,7 +5519,7 @@ checksum = "dc897dd8d9e8bd1ed8cdad82b5966c3e0ecae09fb1907d58efaa013543185d0a"
 
 [[package]]
 name = "rehydrate-app"
-version = "1.0.0"
+version = "1.0.1"
 dependencies = [
  "base64 0.22.1",
  "directories",
@@ -5548,7 +5548,7 @@ dependencies = [
 
 [[package]]
 name = "rehydrate-core"
-version = "1.0.0"
+version = "1.0.1"
 dependencies = [
  "fs4",
  "hex",
@@ -5565,7 +5565,7 @@ dependencies = [
 
 [[package]]
 name = "rehydrate-device"
-version = "1.0.0"
+version = "1.0.1"
 dependencies = [
  "async-trait",
  "keyring",
@@ -5582,7 +5582,7 @@ dependencies = [
 
 [[package]]
 name = "rehydrate-http"
-version = "1.0.0"
+version = "1.0.1"
 dependencies = [
  "serde_json",
  "thiserror 2.0.18",
@@ -5592,7 +5592,7 @@ dependencies = [
 
 [[package]]
 name = "rehydrate-ocr"
-version = "1.0.0"
+version = "1.0.1"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -5612,7 +5612,7 @@ dependencies = [
 
 [[package]]
 name = "rehydrate-publish"
-version = "1.0.0"
+version = "1.0.1"
 dependencies = [
  "base64 0.22.1",
  "hex",
@@ -5628,7 +5628,7 @@ dependencies = [
 
 [[package]]
 name = "rehydrate-render"
-version = "1.0.0"
+version = "1.0.1"
 dependencies = [
  "image",
  "printpdf",
@@ -5637,7 +5637,7 @@ dependencies = [
 
 [[package]]
 name = "rehydrate-sync"
-version = "1.0.0"
+version = "1.0.1"
 dependencies = [
  "async-trait",
  "futures",
@@ -5654,7 +5654,7 @@ dependencies = [
 
 [[package]]
 name = "rehydrate-tests-integration"
-version = "1.0.0"
+version = "1.0.1"
 dependencies = [
  "serde_json",
 ]
