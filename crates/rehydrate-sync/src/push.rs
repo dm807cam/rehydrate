@@ -595,6 +595,305 @@ mod tests {
         );
     }
 
+    /// Issue #17: cover archive soft-delete propagation. When the
+    /// user archives a doc locally, `archive_document` writes a new
+    /// version whose `.metadata` carries `deleted: true` and
+    /// `parent: "trash"`. The next push must ship that metadata to
+    /// the device — that's the channel by which xochitl learns to
+    /// move the doc to its Trash view. A regression that classified
+    /// archived rows as Skipped or stripped the mutation would
+    /// silently strand the user's archive intent on the host while
+    /// the device kept showing the doc as live.
+    #[tokio::test]
+    async fn archive_propagates_deleted_metadata_to_device_on_next_push() {
+        let lib_dir = tempfile::tempdir().unwrap();
+        let dev_dir = tempfile::tempdir().unwrap();
+        let lib = Library::open(lib_dir.path()).unwrap();
+        let dev = FakeDevice::new(dev_dir.path());
+
+        // Seed a doc with a real (parseable JSON) `.metadata` blob,
+        // since `archive_document` reads → mutates → re-writes it.
+        // `b"{}"` is a legal empty JSON object — the archive mutation
+        // just adds `deleted` and `parent` fields to it. We record
+        // via `Source::Imported` (not the pre-faked-last_seen path
+        // `seed_doc` uses) so the initial push actually uploads —
+        // we need the device to start with the doc on disk to make
+        // the post-archive "metadata is now deleted=true" assertion
+        // meaningful.
+        let mut m1 = Manifest::new("doc-1", "Notebook", "Doc One");
+        let meta1 = lib.put_blob(b"{}").unwrap();
+        let content1 = lib.put_blob(b"{}").unwrap();
+        m1.files.push(ManifestFile {
+            path: "doc-1.metadata".into(),
+            sha256: meta1.hash,
+            size: meta1.size,
+            mode: 0o644,
+            derived: false,
+        });
+        m1.files.push(ManifestFile {
+            path: "doc-1.content".into(),
+            sha256: content1.hash,
+            size: content1.size,
+            mode: 0o644,
+            derived: false,
+        });
+        lib.record_version(&m1, Source::Imported).unwrap();
+        execute_push(
+            &lib,
+            &dev,
+            plan_push(&lib).unwrap(),
+            None,
+            Cancel::default(),
+        )
+        .await
+        .unwrap();
+        // Sanity: device received the initial (non-deleted) metadata.
+        let pre = std::fs::read(dev_dir.path().join("doc-1.metadata")).unwrap();
+        let pre_v: serde_json::Value = serde_json::from_slice(&pre).unwrap();
+        assert_ne!(
+            pre_v.get("deleted").and_then(|v| v.as_bool()),
+            Some(true),
+            "pre-archive device metadata must not be marked deleted",
+        );
+
+        // User archives locally.
+        lib.archive_document("doc-1", rehydrate_core::ArchiveReason::Local)
+            .unwrap();
+
+        // plan_push must now classify the archived row as Outbound
+        // — its `current_manifest` (the deleted=true revision) no
+        // longer matches the device's last_seen_manifest.
+        let plan = plan_push(&lib).unwrap();
+        let outbound: Vec<_> = plan
+            .items
+            .iter()
+            .filter(|i| i.status == PushItemStatus::Outbound)
+            .collect();
+        assert_eq!(
+            outbound.len(),
+            1,
+            "archived doc must surface as Outbound, plan={plan:?}",
+        );
+        assert_eq!(outbound[0].document.document_id, "doc-1");
+        let report = execute_push(&lib, &dev, plan, None, Cancel::default())
+            .await
+            .unwrap();
+        assert_eq!(report.pushed, 1);
+
+        // Device-side metadata now carries the archive mutation.
+        let post = std::fs::read(dev_dir.path().join("doc-1.metadata")).unwrap();
+        let post_v: serde_json::Value = serde_json::from_slice(&post).unwrap();
+        assert_eq!(
+            post_v.get("deleted").and_then(|v| v.as_bool()),
+            Some(true),
+            "post-archive device metadata must be deleted=true, got {post_v}",
+        );
+        assert_eq!(
+            post_v.get("parent").and_then(|v| v.as_str()),
+            Some("trash"),
+            "archive must reparent to trash so xochitl moves it",
+        );
+
+        // Re-planning shows nothing outbound — last_seen advanced.
+        let plan2 = plan_push(&lib).unwrap();
+        assert!(
+            plan2
+                .items
+                .iter()
+                .all(|i| i.status != PushItemStatus::Outbound),
+            "after a successful archive push, the row must no longer be outbound",
+        );
+    }
+
+    /// Issue #17: cover version restore round-trip. The user picks
+    /// an older version from the history drawer; `restore_version`
+    /// re-records that older manifest as the new current. The push
+    /// then ships the older content back to the device — exactly
+    /// the "undo a device-side edit" affordance the version log
+    /// exists for. A regression that left `current_manifest`
+    /// unchanged after a restore would silently no-op the push and
+    /// the user's intent (restore-and-replace on device) would be
+    /// lost.
+    #[tokio::test]
+    async fn version_restore_pushes_the_restored_bytes_back_to_device() {
+        let lib_dir = tempfile::tempdir().unwrap();
+        let dev_dir = tempfile::tempdir().unwrap();
+        let lib = Library::open(lib_dir.path()).unwrap();
+        let dev = FakeDevice::new(dev_dir.path());
+
+        // v1: original content. We record + push manually (instead
+        // of via seed_doc) so `last_seen_manifest` stays NULL and
+        // the first push actually uploads v1 to the device. Otherwise
+        // every later assertion against the device file would be
+        // reading the wrong revision.
+        let mut m1 = Manifest::new("doc-1", "Notebook", "Doc One");
+        let meta_v1 = lib.put_blob(b"{\"version\":1}").unwrap();
+        let content_v1 = lib.put_blob(b"{\"v\":1}").unwrap();
+        m1.files.push(ManifestFile {
+            path: "doc-1.metadata".into(),
+            sha256: meta_v1.hash,
+            size: meta_v1.size,
+            mode: 0o644,
+            derived: false,
+        });
+        m1.files.push(ManifestFile {
+            path: "doc-1.content".into(),
+            sha256: content_v1.hash,
+            size: content_v1.size,
+            mode: 0o644,
+            derived: false,
+        });
+        lib.record_version(&m1, Source::Imported).unwrap();
+        execute_push(
+            &lib,
+            &dev,
+            plan_push(&lib).unwrap(),
+            None,
+            Cancel::default(),
+        )
+        .await
+        .unwrap();
+        // History row id for v1 — what we'll restore back to.
+        let history_after_v1 = lib.get_history("doc-1").unwrap();
+        assert_eq!(history_after_v1.len(), 1);
+        let v1_id = history_after_v1[0].id;
+
+        // v2: simulate a later library-side edit (Source::Imported so
+        // last_seen stays at v1's hash and the next plan_push surfaces
+        // the v1→v2 delta as Outbound).
+        let mut m2 = Manifest::new("doc-1", "Notebook", "Doc One");
+        let meta_v2 = lib.put_blob(b"{\"version\":2}").unwrap();
+        let content_v2 = lib.put_blob(b"{\"v\":2}").unwrap();
+        m2.files.push(ManifestFile {
+            path: "doc-1.metadata".into(),
+            sha256: meta_v2.hash,
+            size: meta_v2.size,
+            mode: 0o644,
+            derived: false,
+        });
+        m2.files.push(ManifestFile {
+            path: "doc-1.content".into(),
+            sha256: content_v2.hash,
+            size: content_v2.size,
+            mode: 0o644,
+            derived: false,
+        });
+        lib.record_version(&m2, Source::Imported).unwrap();
+        execute_push(
+            &lib,
+            &dev,
+            plan_push(&lib).unwrap(),
+            None,
+            Cancel::default(),
+        )
+        .await
+        .unwrap();
+        // Sanity: device now has v2.
+        let on_device_v2 = std::fs::read(dev_dir.path().join("doc-1.metadata")).unwrap();
+        assert_eq!(on_device_v2, b"{\"version\":2}");
+
+        // User clicks "Restore" on the v1 history row.
+        let restore_outcome = lib.restore_version(v1_id).unwrap();
+        assert!(
+            !restore_outcome.unchanged,
+            "restoring to an older version must produce a fresh manifest record",
+        );
+
+        // plan_push surfaces the restore as Outbound — last_seen is
+        // pinned to v2's hash while current_manifest is now v1's.
+        let plan = plan_push(&lib).unwrap();
+        let outbound: Vec<_> = plan
+            .items
+            .iter()
+            .filter(|i| i.status == PushItemStatus::Outbound)
+            .collect();
+        assert_eq!(
+            outbound.len(),
+            1,
+            "restore_version must mark the doc Outbound, plan={plan:?}",
+        );
+
+        let report = execute_push(&lib, &dev, plan, None, Cancel::default())
+            .await
+            .unwrap();
+        assert_eq!(report.pushed, 1);
+
+        // The device should now hold v1's content again. That's
+        // the restore round-trip the user expected: history rolls
+        // back the tablet, not just the library view.
+        let on_device_after_restore = std::fs::read(dev_dir.path().join("doc-1.metadata")).unwrap();
+        assert_eq!(
+            on_device_after_restore, b"{\"version\":1}",
+            "device-side metadata must be v1's bytes after restore+push",
+        );
+        let on_device_content_after_restore =
+            std::fs::read(dev_dir.path().join("doc-1.content")).unwrap();
+        assert_eq!(on_device_content_after_restore, b"{\"v\":1}");
+    }
+
+    /// Issue #17: cover folder rename push. The existing
+    /// `folder_reparent_pushes_new_parent_in_metadata_payload` test
+    /// covers the *parent* field; the rename case (visibleName
+    /// change) is a different mutation path through
+    /// `rename_folder` → folder push queue → device. The device
+    /// receives a fresh `<folder_id>.metadata` payload whose
+    /// `visibleName` field reflects the new name. A regression
+    /// that wired the rename to the wrong field or dropped the
+    /// queue entry would surface here as the device keeping the
+    /// pre-rename name.
+    #[tokio::test]
+    async fn folder_rename_pushes_new_visible_name_to_device() {
+        let lib_dir = tempfile::tempdir().unwrap();
+        let dev_dir = tempfile::tempdir().unwrap();
+        let lib = Library::open(lib_dir.path()).unwrap();
+        let dev = FakeDevice::new(dev_dir.path());
+
+        let folder = lib.create_folder("Old name", None).unwrap();
+        let plan = plan_push(&lib).unwrap();
+        execute_push(&lib, &dev, plan, None, Cancel::default())
+            .await
+            .unwrap();
+
+        // Device-side metadata reflects the initial create.
+        let metadata_path = dev_dir
+            .path()
+            .join(format!("{}.metadata", folder.folder_id));
+        let pre_bytes = std::fs::read(&metadata_path).expect("folder metadata on device");
+        let pre_v: serde_json::Value = serde_json::from_slice(&pre_bytes).unwrap();
+        assert_eq!(
+            pre_v.get("visibleName").and_then(|x| x.as_str()),
+            Some("Old name"),
+        );
+
+        // Rename. mark_folder_pushed cleared the previous Upsert,
+        // so the rename enqueues a fresh one.
+        lib.rename_folder(&folder.folder_id, "New name").unwrap();
+
+        let plan = plan_push(&lib).unwrap();
+        execute_push(&lib, &dev, plan, None, Cancel::default())
+            .await
+            .unwrap();
+
+        // Device-side metadata now carries the new visibleName.
+        let post_bytes = std::fs::read(&metadata_path).expect("folder metadata on device");
+        let post_v: serde_json::Value = serde_json::from_slice(&post_bytes).unwrap();
+        assert_eq!(
+            post_v.get("visibleName").and_then(|x| x.as_str()),
+            Some("New name"),
+            "folder rename must reach the device via the next push",
+        );
+
+        // And the folder push queue should now be empty — a
+        // regression that left a duplicate Upsert in the queue
+        // would surface as the same metadata being re-pushed on
+        // every subsequent sync.
+        let pending = lib.list_pending_folder_pushes().unwrap();
+        assert!(
+            !pending.iter().any(|op| op.folder_id() == folder.folder_id),
+            "folder push queue must be cleared after a successful rename push, got {pending:?}",
+        );
+    }
+
     #[tokio::test]
     async fn derived_files_are_not_pushed_to_device() {
         // Library-side artefacts (OCR transcripts, future caches)
