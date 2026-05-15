@@ -116,10 +116,29 @@ impl BlobStore {
             }
         }
 
-        // Best-effort fsync of the directory so the rename hits the disk.
-        if let Some(parent) = final_path.parent() {
-            if let Ok(dir) = File::open(parent) {
-                let _ = dir.sync_all();
+        // Issue #30: fsync every directory level from the blob's
+        // parent up to (and including) the blob store root. POSIX
+        // guarantees `fsync(file)` makes the file's bytes durable,
+        // but a newly-created directory entry pointing at that file
+        // is only durable after `fsync` of the *containing*
+        // directory — recursively, because each level may itself be
+        // a fresh create_dir_all from this very call (the 2-byte
+        // fanout shard `aa/bb/` is materialised lazily on the first
+        // blob landing there). Without this walk, a power loss
+        // between `fs::rename` and the kernel's eventual page-cache
+        // flush can leave the manifest (committed to SQLite at
+        // synchronous=NORMAL, so it IS durable) pointing at a hash
+        // whose directory entry never made it to disk; the user
+        // sees `MissingBlob` on next read with no clear recovery.
+        //
+        // Best-effort (the file bytes are already durable from
+        // `inner.sync_all()` above; this just shortens the window
+        // in which the *directory entry* lags behind), matching
+        // the pre-existing best-effort convention for the
+        // immediate parent.
+        for dir in directories_to_fsync(final_path.parent(), &self.paths.blobs) {
+            if let Ok(f) = File::open(dir) {
+                let _ = f.sync_all();
             }
         }
 
@@ -165,6 +184,32 @@ impl BlobStore {
     }
 }
 
+/// Return every directory level from `start` up to (and including)
+/// `root`, in walk-up order. Returns an empty `Vec` if `start` is
+/// None or doesn't lie under `root` — defensive, since a runaway
+/// walk past the blob store would be a bug. Pure / pathbuf-only so
+/// the termination behaviour can be exercised without touching the
+/// filesystem.
+fn directories_to_fsync(start: Option<&std::path::Path>, root: &std::path::Path) -> Vec<PathBuf> {
+    let Some(start) = start else {
+        return Vec::new();
+    };
+    if !start.starts_with(root) {
+        return Vec::new();
+    }
+    let mut out = Vec::with_capacity(4);
+    let mut cursor: &std::path::Path = start;
+    loop {
+        out.push(cursor.to_path_buf());
+        if cursor == root {
+            break;
+        }
+        let Some(parent) = cursor.parent() else { break };
+        cursor = parent;
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -203,6 +248,66 @@ mod tests {
         let a = bs.put_bytes(b"alpha").unwrap();
         let b = bs.put_bytes(b"beta").unwrap();
         assert_ne!(a.hash, b.hash);
+    }
+
+    /// Issue #30 regression: the durability walk must cover the
+    /// blob's parent up through (and including) the blob-store
+    /// root. The hash `aabbcc…` lives at `blobs/aa/bb/<hash>`, so
+    /// the walk must yield exactly three directories: the leaf
+    /// shard, its parent shard, and the blob root. A regression
+    /// that stopped one level short would let the freshly-created
+    /// `bb/` entry in `aa/` (or the `aa/` entry in `blobs/`) lag
+    /// behind a kernel crash and orphan the blob.
+    #[test]
+    fn directories_to_fsync_covers_full_chain_inclusive() {
+        let root = PathBuf::from("/lib/blobs");
+        let leaf = PathBuf::from("/lib/blobs/aa/bb");
+        let dirs = super::directories_to_fsync(Some(leaf.as_path()), &root);
+        assert_eq!(
+            dirs,
+            vec![
+                PathBuf::from("/lib/blobs/aa/bb"),
+                PathBuf::from("/lib/blobs/aa"),
+                PathBuf::from("/lib/blobs"),
+            ],
+            "walk must yield leaf, mid, root — in that order",
+        );
+    }
+
+    /// Issue #30 safety: the walk must STOP at the blob-store root.
+    /// Without the sentinel check, an off-by-one would step out of
+    /// `blobs/` into the library root, and from there toward `/`,
+    /// fsyncing directories the blob store doesn't own. None of
+    /// those are correctness-load-bearing, but the loop would burn
+    /// extra fsyncs and (worse) imply the wrong invariant to a
+    /// future reader.
+    #[test]
+    fn directories_to_fsync_does_not_escape_root() {
+        let root = PathBuf::from("/lib/blobs");
+        let leaf = PathBuf::from("/lib/blobs/aa/bb");
+        let dirs = super::directories_to_fsync(Some(leaf.as_path()), &root);
+        for d in &dirs {
+            assert!(
+                d.starts_with(&root),
+                "{d:?} escaped the blob-store root {root:?}",
+            );
+        }
+    }
+
+    /// Issue #30: defensive — if for any reason the blob's parent
+    /// is not under the blob root (shouldn't happen, since
+    /// `blob_path` always composes a path under `paths.blobs`),
+    /// the walk must return an empty list rather than fsyncing
+    /// arbitrary ancestors of an unrelated path.
+    #[test]
+    fn directories_to_fsync_refuses_paths_outside_root() {
+        let root = PathBuf::from("/lib/blobs");
+        let stray = PathBuf::from("/etc/passwd.d");
+        let dirs = super::directories_to_fsync(Some(stray.as_path()), &root);
+        assert!(
+            dirs.is_empty(),
+            "walk on a path outside the blob root must yield nothing, got {dirs:?}",
+        );
     }
 
     #[test]
