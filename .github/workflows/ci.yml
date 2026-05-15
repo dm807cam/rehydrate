@@ -72,13 +72,18 @@ jobs:
   audit:
     name: Supply chain audit
     runs-on: [self-hosted, macOS, ARM64]
-    # Soft-gate: a new advisory landing between commits shouldn't
-    # block a merge that's otherwise green. `cargo deny check` and
-    # `cargo audit` both read from `.cargo/audit.toml` + `deny.toml`,
-    # which carry the triage rationale for each ignored advisory.
-    # The audit job stays green for known-and-justified advisories
-    # and goes yellow when a genuinely new one lands.
-    continue-on-error: true
+    # Hard-gate (issue #19). `cargo deny check` and `cargo audit`
+    # both read from `.cargo/audit.toml` + `deny.toml`, which carry
+    # the triage rationale (with required `reason` fields) for each
+    # ignored advisory. A red audit run means a genuinely new
+    # advisory has landed on a transitive dep: the resolution is
+    # either bump-the-dep or add a new `ignore` entry with a
+    # one-line rationale and ship.
+    #
+    # v1.0 has no auto-update, so every installed copy carries the
+    # exposure window of any CVE that lands between commits — the
+    # triage cost of failing fast is much cheaper than the
+    # alternative of letting an advisory go unnoticed in the logs.
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
