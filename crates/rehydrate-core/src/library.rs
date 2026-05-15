@@ -8,7 +8,7 @@ use std::fs;
 use std::path::Path;
 use std::sync::Mutex;
 
-use fs4::fs_std::FileExt;
+use fs4::FileExt;
 use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
@@ -419,7 +419,7 @@ impl Library {
             .write(true)
             .truncate(false)
             .open(&lock_path)?;
-        if lock_file.try_lock_exclusive().is_err() {
+        if FileExt::try_lock(&lock_file).is_err() {
             return Err(CoreError::AlreadyOpen(paths.root.display().to_string()));
         }
 
