@@ -159,6 +159,27 @@ fi
 # Prerequisite checks (cargo-tauri + aarch64 target) ran above
 # before the UI build so a missing tool fails fast.
 
+BUNDLE_DIR="target/aarch64-apple-darwin/release/bundle"
+
+# Tauri's bundle_dmg.sh writes its read-write interstitial
+# (`rw.<pid>.<name>.dmg`) into the *source* folder it is about to
+# copy into the final image. If a previous bundle failed mid-way
+# (issue #54: out-of-space on the runner) those interstitials are
+# left behind under `bundle/macos`, and the next bundle then tries
+# to copy them — a growing temporary disk image — into themselves,
+# producing the misleading "No space left on device" hdiutil error.
+# Sweep them before invoking the bundler so a bad previous run
+# cannot poison the next one. The pattern is constrained on purpose:
+# `rw.*.dmg` is exactly what bundle_dmg.sh names its tempfiles.
+if [[ -d "$BUNDLE_DIR/macos" ]]; then
+  stale=$(find "$BUNDLE_DIR/macos" -maxdepth 2 -name 'rw.*.dmg' -print 2>/dev/null || true)
+  if [[ -n "$stale" ]]; then
+    echo "==> removing stale bundle_dmg.sh interstitials:"
+    echo "$stale" | sed 's/^/    /'
+    echo "$stale" | xargs rm -f
+  fi
+fi
+
 echo "==> cargo tauri build (--no-default-features, aarch64-apple-darwin)"
 # `cargo tauri build` runs the bundler. The `--bundles app,dmg`
 # limit keeps us from producing `.app.tar.gz` archives the local
@@ -174,9 +195,39 @@ cargo tauri build \
   --bundles app,dmg \
   -- --no-default-features
 
-BUNDLE_DIR="target/aarch64-apple-darwin/release/bundle"
 DMG_PATH="$(ls -t "$BUNDLE_DIR/dmg"/*.dmg 2>/dev/null | head -n1 || true)"
 APP_PATH="$(ls -dt "$BUNDLE_DIR/macos"/*.app 2>/dev/null | head -n1 || true)"
+
+# Belt-and-suspenders post-build sweep: even on a successful build,
+# leaving an `rw.*.dmg` under `bundle/macos` would silently poison
+# the *next* build. Tauri's bundler is supposed to remove these on
+# success, but the failure mode in #54 shows it does not on error
+# paths — and a green build that leaves landmines for the next one
+# is exactly the kind of thing we want to catch here.
+if [[ -d "$BUNDLE_DIR/macos" ]]; then
+  find "$BUNDLE_DIR/macos" -maxdepth 2 -name 'rw.*.dmg' -delete 2>/dev/null || true
+fi
+
+# Hard assertion that the bundle path actually produced a `.dmg` —
+# `cargo tauri build` exits 0 for some packaging failures (the
+# `bundle_dmg.sh` error surface is narrow), so without an explicit
+# check the script would print "==> bundle complete" with no DMG
+# and the release workflow would happily try to upload nothing.
+if [[ -z "$DMG_PATH" || ! -s "$DMG_PATH" ]]; then
+  echo "==> DMG missing or zero bytes under $BUNDLE_DIR/dmg/" >&2
+  echo "    (cargo tauri build reported success but produced no usable .dmg)" >&2
+  exit 1
+fi
+
+# `hdiutil verify` re-reads the disk image's checksum and rejects
+# truncated / corrupted images. Cheap (<1s) and catches the exact
+# class of failure the unconditional rw.*.dmg cleanup is meant to
+# prevent. Fail closed: a bad DMG should never reach a user.
+echo "==> hdiutil verify $DMG_PATH"
+if ! hdiutil verify "$DMG_PATH" >/dev/null; then
+  echo "==> hdiutil verify failed on $DMG_PATH" >&2
+  exit 1
+fi
 
 echo ""
 echo "==> bundle complete"

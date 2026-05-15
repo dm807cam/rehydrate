@@ -46,8 +46,206 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  # Preflight gate (issue #55). The build job below only runs if
+  # everything here is green. Treats a tag as a release candidate that
+  # must pass the same checks as a push to `main`, plus a set of
+  # release-specific guards (version metadata parity, changelog
+  # section, tag-on-main reachability). A maintainer mistake — tag
+  # from a feature branch, forget to bump a version field, forget to
+  # add a changelog section — fails *here*, before any artefact gets
+  # uploaded to a draft release where it could be accidentally
+  # published.
+  preflight:
+    name: Release preflight
+    runs-on: [self-hosted, macOS, ARM64]
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      changelog_heading: ${{ steps.changelog.outputs.heading }}
+      body: ${{ steps.changelog.outputs.body }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          # The tag-reachability check below needs `origin/main`
+          # available locally. The default shallow checkout only
+          # fetches the tagged commit, so `git merge-base --is-
+          # ancestor` would fail with "not a tree" on `origin/main`.
+          fetch-depth: 0
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+          targets: aarch64-apple-darwin
+
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+
+      # Resolve the version once. For tag pushes this is the tag
+      # without the leading `v`; for manual `workflow_dispatch`
+      # runs, fall back to the version field in `Cargo.toml` so
+      # the metadata-parity check still has something to compare
+      # against. Manual runs never produce a Release entry, so a
+      # mismatch is a warning rather than a hard fail — but we
+      # still flag it.
+      - name: Resolve version
+        id: version
+        run: |
+          set -euo pipefail
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            version="${GITHUB_REF_NAME#v}"
+          else
+            # Manual run — read from Cargo.toml so the parity check
+            # below has a value to assert against.
+            version=$(grep -m1 '^version = ' Cargo.toml | sed -E 's/version = "([^"]+)"/\1/')
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "Resolved release version: $version"
+
+      # Version metadata parity. Every authoritative version field
+      # has to equal the resolved version. The release workflow
+      # never used to check this, so a tag push with a stale
+      # `Cargo.toml` would produce a binary whose About dialog
+      # disagreed with its filename. Fail loudly instead.
+      - name: Assert version parity
+        if: ${{ startsWith(github.ref, 'refs/tags/v') }}
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          fail=0
+          check() {
+            local label="$1" file="$2" actual="$3"
+            if [[ "$actual" != "$VERSION" ]]; then
+              echo "::error file=$file::$label version is '$actual', expected '$VERSION'"
+              fail=1
+            else
+              echo "ok  $label = $actual ($file)"
+            fi
+          }
+          cargo_ver=$(grep -m1 '^version = ' Cargo.toml | sed -E 's/version = "([^"]+)"/\1/')
+          check "Cargo workspace" Cargo.toml "$cargo_ver"
+          tauri_ver=$(python3 -c 'import json,sys; print(json.load(open("crates/rehydrate-app/tauri.conf.json"))["version"])')
+          check "tauri.conf.json" crates/rehydrate-app/tauri.conf.json "$tauri_ver"
+          ui_ver=$(python3 -c 'import json,sys; print(json.load(open("ui/package.json"))["version"])')
+          check "ui/package.json" ui/package.json "$ui_ver"
+          lock_ver=$(python3 -c 'import json,sys; print(json.load(open("ui/package-lock.json"))["version"])')
+          check "ui/package-lock.json (root)" ui/package-lock.json "$lock_ver"
+          lock_pkg_ver=$(python3 -c 'import json,sys; d=json.load(open("ui/package-lock.json")); print(d["packages"][""]["version"])')
+          check "ui/package-lock.json (packages.\"\")" ui/package-lock.json "$lock_pkg_ver"
+          if [[ $fail -ne 0 ]]; then
+            echo "::error::Version metadata does not match tag v$VERSION. Bump every field in one prep commit before tagging."
+            exit 1
+          fi
+
+      # Tag reachability. A release tag must point at a commit that
+      # is reachable from `origin/main`, otherwise the release was
+      # cut from an unreviewed branch and bypasses the main-branch
+      # protection rules. Override path is documented: re-run the
+      # workflow with `workflow_dispatch` from an explicitly named
+      # release branch.
+      - name: Assert tag is on main
+        if: ${{ startsWith(github.ref, 'refs/tags/v') }}
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin main:refs/remotes/origin/main
+          if git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+            echo "ok  $GITHUB_SHA is reachable from origin/main"
+          else
+            echo "::error::Tag $GITHUB_REF_NAME points at $GITHUB_SHA, which is NOT reachable from origin/main."
+            echo "::error::Release tags must be cut from a commit on main. If you intentionally need to release from a branch, run the workflow manually with workflow_dispatch from that branch."
+            exit 1
+          fi
+
+      # Changelog section is mandatory for tag releases. The old
+      # behaviour ("fall back to a generic body") meant a forgotten
+      # changelog update would silently ship a release with no
+      # release notes — fine for a 9.9.9-rc1 dry-run, bad for an
+      # actual user-facing patch. Fail closed for tag pushes.
+      - name: Extract CHANGELOG section
+        id: changelog
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          body=$(awk -v ver="$VERSION" '
+            $0 ~ "^## \\[" ver "\\]" { capture = 1; heading = $0; next }
+            capture && /^## \[/ { exit }
+            capture { print }
+          ' CHANGELOG.md)
+          heading=$(awk -v ver="$VERSION" '
+            $0 ~ "^## \\[" ver "\\]" { print; exit }
+          ' CHANGELOG.md)
+          if [[ -z "$body" ]]; then
+            if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+              echo "::error file=CHANGELOG.md::No section '## [$VERSION]' in CHANGELOG.md. Add it before tagging."
+              exit 1
+            fi
+            echo "::warning::No CHANGELOG section for $VERSION; using generic body (workflow_dispatch dry-run)"
+            body="Automated build for \`v$VERSION\`."
+            heading="(none)"
+          fi
+          {
+            echo "heading=$heading"
+            echo "body<<EOF_CHANGELOG_BODY"
+            printf '%s\n' "$body"
+            echo "EOF_CHANGELOG_BODY"
+          } >> "$GITHUB_OUTPUT"
+
+      # Same gates the CI workflow runs on `main`. Duplicated here
+      # rather than `workflow_call`'d so a maintainer reading the
+      # release workflow can see what's actually enforced.
+      - name: Install UI deps
+        working-directory: ui
+        run: npm ci
+
+      - name: UI typecheck
+        working-directory: ui
+        run: npm run typecheck
+
+      - name: UI lint
+        working-directory: ui
+        run: npm run lint
+
+      - name: Build UI
+        working-directory: ui
+        run: npm run build
+
+      - name: cargo fmt
+        run: cargo fmt --all -- --check
+
+      - name: cargo clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: cargo test
+        run: cargo test --workspace --no-fail-fast
+
+      - name: Install cargo-audit and cargo-deny
+        run: |
+          cargo install --locked cargo-audit
+          cargo install --locked cargo-deny
+
+      - name: cargo audit
+        run: cargo audit --deny warnings
+
+      - name: cargo deny
+        run: cargo deny check
+
+      - name: Summary
+        run: |
+          {
+            echo "## Release preflight"
+            echo ""
+            echo "- Version: \`${{ steps.version.outputs.version }}\`"
+            echo "- Tag: \`${GITHUB_REF_NAME}\`"
+            echo "- SHA: \`${GITHUB_SHA}\`"
+            echo "- Changelog heading: \`${{ steps.changelog.outputs.heading }}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
   build:
     name: macOS (Apple Silicon)
+    needs: preflight
     runs-on: [self-hosted, macOS, ARM64]
     steps:
       - uses: actions/checkout@v6
@@ -80,34 +278,25 @@ jobs:
         working-directory: ui
         run: npm run build
 
-      # Pull the matching version's section out of CHANGELOG.md so the
-      # auto-published release body shows "what's new" rather than
-      # boilerplate. Without this the GitHub Releases page reads like
-      # a CI by-product, not a release. Falls back to a generic body
-      # if no matching section exists (so a v9.9.9-rc1 tag without a
-      # changelog still produces a release).
-      - name: Extract CHANGELOG section
-        if: ${{ startsWith(github.ref, 'refs/tags/v') }}
-        id: changelog
+      # Clean any `rw.*.dmg` interstitials left under `bundle/macos`
+      # from a previous failed run on this self-hosted runner. See
+      # issue #54: bundle_dmg.sh writes its read-write temp into the
+      # *source* folder it's about to copy, so a leftover tempfile
+      # from a previous failed bundle ends up being copied into its
+      # own next disk image and the runner dies with a misleading
+      # "no space left on device" hdiutil error.
+      - name: Clean stale DMG interstitials
         run: |
           set -euo pipefail
-          # Tag is `vX.Y.Z` but CHANGELOG heading is `## [X.Y.Z]`.
-          version="${GITHUB_REF_NAME#v}"
-          # State machine: between `## [<version>]` and the next `## [`.
-          body=$(awk -v ver="$version" '
-            $0 ~ "^## \\[" ver "\\]" { capture = 1; next }
-            capture && /^## \[/ { exit }
-            capture { print }
-          ' CHANGELOG.md)
-          if [ -z "$body" ]; then
-            echo "::warning::No CHANGELOG section found for v$version; using generic body"
-            body="Automated build for \`${GITHUB_REF_NAME}\`."
+          dir="target/aarch64-apple-darwin/release/bundle/macos"
+          if [[ -d "$dir" ]]; then
+            stale=$(find "$dir" -maxdepth 2 -name 'rw.*.dmg' -print 2>/dev/null || true)
+            if [[ -n "$stale" ]]; then
+              echo "Removing stale interstitials:"
+              echo "$stale" | sed 's/^/  /'
+              echo "$stale" | xargs rm -f
+            fi
           fi
-          {
-            echo "body<<EOF_CHANGELOG_BODY"
-            printf '%s\n' "$body"
-            echo "EOF_CHANGELOG_BODY"
-          } >> "$GITHUB_OUTPUT"
 
       # Build + (when triggered by a tag) upload to a draft release at
       # `${{ github.ref_name }}`.
@@ -134,7 +323,7 @@ jobs:
           tagName: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || '' }}
           releaseName: ${{ startsWith(github.ref, 'refs/tags/v') && format('reHydrate {0}', github.ref_name) || '' }}
           releaseBody: |
-            ${{ steps.changelog.outputs.body }}
+            ${{ needs.preflight.outputs.body }}
 
             ---
 
@@ -155,7 +344,41 @@ jobs:
             for the threat model and the vulnerability-report channel.
           releaseDraft: true
           prerelease: false
-          args: --target aarch64-apple-darwin --bundles app,dmg -- --no-default-features
+          args: --target aarch64-apple-darwin --bundles app,dmg --verbose -- --no-default-features
+
+      # Hard assertion that the bundle path actually produced a DMG
+      # of the expected name and that the image is structurally
+      # sound. Catches the failure mode in #54 where Tauri's bundle
+      # step exits non-fatally even though `bundle_dmg.sh` errored,
+      # and catches future packaging regressions before the SHA256SUMS
+      # step happily hashes nothing.
+      - name: Verify DMG
+        env:
+          VERSION: ${{ needs.preflight.outputs.version }}
+        run: |
+          set -euo pipefail
+          dmg_dir="target/aarch64-apple-darwin/release/bundle/dmg"
+          expected="$dmg_dir/reHydrate_${VERSION}_aarch64.dmg"
+          if [[ ! -s "$expected" ]]; then
+            echo "::error::Expected DMG missing or zero bytes: $expected"
+            echo "Directory contents:"
+            ls -la "$dmg_dir" || true
+            exit 1
+          fi
+          echo "ok  $expected ($(stat -f %z "$expected") bytes)"
+          hdiutil verify "$expected"
+          # Belt-and-suspenders: a successful run must not leave
+          # interstitials under bundle/macos either. If `tauri-action`
+          # ever did, the *next* runner job would inherit them.
+          src_dir="target/aarch64-apple-darwin/release/bundle/macos"
+          if [[ -d "$src_dir" ]]; then
+            leftover=$(find "$src_dir" -maxdepth 2 -name 'rw.*.dmg' -print 2>/dev/null || true)
+            if [[ -n "$leftover" ]]; then
+              echo "::error::bundle_dmg.sh left interstitial(s) under $src_dir:"
+              echo "$leftover"
+              exit 1
+            fi
+          fi
 
       # Record a build-provenance attestation for the bundles. This
       # produces a Sigstore-signed statement binding the binary's
@@ -206,6 +429,30 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           gh release upload "${{ github.ref_name }}" "${{ steps.sums.outputs.path }}" --clobber
+
+      # Surface what actually shipped: version, changelog heading
+      # used, and the file names attached to the release. Makes the
+      # workflow summary self-describing instead of requiring the
+      # reader to dig through individual step logs.
+      - name: Release summary
+        if: ${{ always() }}
+        env:
+          VERSION: ${{ needs.preflight.outputs.version }}
+          HEADING: ${{ needs.preflight.outputs.changelog_heading }}
+        run: |
+          {
+            echo "## Release artefacts"
+            echo ""
+            echo "- Version: \`$VERSION\`"
+            echo "- Changelog section: \`$HEADING\`"
+            echo ""
+            echo "### Files"
+            echo ""
+            echo '```'
+            ls -la target/aarch64-apple-darwin/release/bundle/dmg/ 2>/dev/null || true
+            ls -la target/aarch64-apple-darwin/release/bundle/macos/*.app.tar.gz 2>/dev/null || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
 
       # On manual runs (no release to attach to), surface the bundle
       # as a workflow artefact so it can still be downloaded.

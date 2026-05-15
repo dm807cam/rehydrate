@@ -6,6 +6,116 @@ the project follows [Semantic Versioning](https://semver.org/) once it
 hits `1.0.0`. Pre-1.0 releases may break compatibility freely; the
 library on-disk format is forward-stable from `0.9.0`.
 
+## [Unreleased]
+
+## [1.0.1] — 2026-05-15
+
+Patch release on the v1.0 line. Bug fixes, hardening, and dependency
+bumps that landed against `main` since `v1.0.0`. No on-disk format
+changes; no user-facing behavioural changes outside the fixes below.
+The macOS bundle is still Apple-Silicon-only, still unsigned, and
+still requires the right-click → Open dance on first launch.
+
+### Fixed
+
+- **Sync (push side)**: `delete_document_tree` failures now propagate
+  to the sync result so a failed folder delete stays queued and is
+  retried on the next push, rather than being silently swallowed
+  (#23).
+- **Sync (pull side)**: `record_version` on an archived document is
+  rejected at the boundary, closing a race where a pull mid-archive
+  could resurrect a soft-deleted doc (#31).
+- **Device layer**: `put_document_tree` is now a true replace —
+  stale tablet-side entries are removed when the library-side tree
+  shrinks, so a folder rename + child-removal in one push no longer
+  leaves orphan tablet entries (#22).
+- **Device layer**: SFTP entry names containing path separators or
+  parent references are rejected at the boundary instead of being
+  treated as leaf names (#33).
+- **Core (blob store)**: `import_file` failures now unlink the
+  staged blob, so an interrupted import does not leak a partial
+  file under the blob fanout (#39).
+- **Core (blob store)**: blob-fanout ancestor directories are
+  fsynced up to the blob root after a write, so a crash between
+  rename and parent-dir fsync cannot leave a blob that exists on
+  disk but is invisible after reboot (#30).
+- **Core (library)**: `library.json` is written atomically via a
+  tempfile + rename rather than truncated-in-place, so a crash mid-
+  write cannot leave a zero-byte stamp file (#32).
+- **rm-parser**: v3–v5 length-prefixed buffers cap their
+  preallocation, closing a parser-DoS where a hostile `.rm` file
+  could request gigabyte allocations from a 32-bit length field
+  (#34).
+- **rm-parser**: unknown `SceneItemType` subtypes are tolerated as
+  forward-compat skips rather than hard parse errors, so newer
+  tablet firmwares do not brick the import path (#35).
+- **App (IPC)**: `open_library` is allowlisted against the picker,
+  the recents list, and the default-library path, so a renderer
+  compromise cannot ask the host to open an attacker-controlled
+  directory as a library (#36).
+- **App (import)**: dropped-file size is preflighted before the
+  bytes are read into memory, so a 5 GiB drag-and-drop is rejected
+  cheaply rather than after an OOM (#24).
+- **UI**: a `refreshLibrary` request that arrives while another is
+  in flight is now queued (one pending slot) instead of being
+  dropped, so a sync-completion event during a manual refresh no
+  longer leaves the library view stale (#38).
+- **UI**: Tauri event listeners unbind cleanly when their owning
+  component unmounts before the `listen()` promise resolves,
+  closing a leak where a long-running listener kept a reference to
+  a discarded component (#37).
+- **UI**: three v1.0.0 UX dead-ends are unblocked (move-to-folder
+  affordance, empty-state guidance, and one settings-tab focus bug)
+  (PR #16).
+
+### Changed
+
+- **CI**: the supply-chain audit job (`cargo audit` + `cargo deny
+  check`) is now a hard gate on `main`. A new advisory landing on a
+  transitive dep fails the build instead of producing a yellow warn
+  in the log (#19). The triage process is documented in
+  `.cargo/audit.toml` and `deny.toml`.
+- **Tests**: pull-side and push-side reconciliation now have
+  coverage at the sync layer (#17). No production-code changes;
+  these tests pin behaviour that was previously asserted only
+  end-to-end.
+
+### Dependencies
+
+- `thiserror` 1.0.69 → 2.0.18 (#29)
+- `sha2` 0.10.9 → 0.11.0 (#28)
+- `imageproc` 0.25.1 → 0.26.2 (#27)
+- `fs4` 0.9.1 → 1.1.0 (#26)
+- `tokio` 1.52.2 → 1.52.3 (#15)
+- `rusqlite` 0.32.1 → 0.39.0 (#14)
+- `directories` 5.0.1 → 6.0.0 (#13)
+- `actions/checkout` 4 → 6 (#10)
+- `actions/setup-node` 4 → 6 (#9)
+- `actions/upload-artifact` 4 → 7 (#7)
+- `actions/attest-build-provenance` 2 → 4 (#8)
+- `tauri-apps/tauri-action` 0.5.20 → 0.6.2 (#6)
+
+### Release engineering
+
+- `build.sh` now removes stale `rw.*.dmg` interstitials from
+  `bundle/macos` before invoking the Tauri bundler, and asserts the
+  expected `.dmg` exists and passes `hdiutil verify` before
+  reporting success. Previously a `bundle_dmg.sh` failure could
+  leave its temporary image inside the source folder, which then
+  caused the next bundle to try copying its own growing tempfile
+  into itself (#54).
+- The release workflow now runs the same gates as CI
+  (`cargo fmt --check`, `clippy -D warnings`, workspace tests,
+  `cargo audit --deny warnings`, `cargo deny check`, UI typecheck
+  + lint + build) as a preflight job before the Tauri build, and
+  asserts that the tag version matches `Cargo.toml`,
+  `tauri.conf.json`, `ui/package.json`, `ui/package-lock.json`,
+  and a matching `CHANGELOG.md` section. The release fails
+  loudly if any of those drift, instead of falling back to a
+  generic body (#55).
+
+[1.0.1]: https://github.com/dm807cam/rehydrate/releases/tag/v1.0.1
+
 ## [1.0.0] — 2026-05-11
 
 First stable release. The goal of v1.0 was to ship the audit cleanups
