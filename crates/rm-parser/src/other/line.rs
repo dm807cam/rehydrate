@@ -28,22 +28,30 @@ impl Parse for Line {
         }
         let amount_points = reader.read_u32()?;
 
+        // DoS guard (issue #34). See `page.rs` for the full rationale.
+        // A Point is 6 × f32 = 24 bytes; cap pre-allocation against
+        // what the stream could possibly hold so a malicious
+        // `amount_points = u32::MAX` doesn't trigger a ~100 GB
+        // Vec::with_capacity before the first read_f32 fails on EOF.
+        const POINT_SIZE: usize = 24;
+        let cap = (amount_points as usize).min(reader.remaining() / POINT_SIZE);
+        let mut points = Vec::with_capacity(cap);
+        for _ in 0..amount_points {
+            points.push(Point {
+                x: reader.read_f32()?,
+                y: reader.read_f32()?,
+                speed: reader.read_f32()?,
+                direction: reader.read_f32()?,
+                width: reader.read_f32()?,
+                pressure: reader.read_f32()?,
+            });
+        }
+
         Ok(Line {
             tool,
             color,
             brush_size,
-            points: (0..amount_points)
-                .map(|_| {
-                    Ok(Point {
-                        x: reader.read_f32()?,
-                        y: reader.read_f32()?,
-                        speed: reader.read_f32()?,
-                        direction: reader.read_f32()?,
-                        width: reader.read_f32()?,
-                        pressure: reader.read_f32()?,
-                    })
-                })
-                .collect::<Result<Vec<Point>, ParseError>>()?,
+            points,
         })
     }
 }
