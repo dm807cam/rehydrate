@@ -591,6 +591,29 @@ impl Library {
 
         let mut conn = self.db.lock();
         let tx = conn.transaction()?;
+
+        // Archive-vs-pull race guard (issue #31). If the user archived
+        // this doc while we were fetching its bytes, an unconditional
+        // INSERT ... ON CONFLICT UPDATE in record_version_in_tx would
+        // resurrect the row into `documents` while `archived_documents`
+        // still holds the deleted=true manifest — `list_pushable_documents`
+        // then ships BOTH, last-write-wins on the device drops the doc
+        // the user never asked to delete. The sister `record_metadata_change`
+        // path has the matching guard at the top of its flow; surfacing
+        // a typed error here lets the sync engine treat the doc as
+        // per-call skipped without aborting the rest of the pull.
+        // unarchive_document deliberately bypasses this gate by going
+        // through record_metadata_change (which calls record_version_in_tx
+        // directly with PostAction::Unarchive).
+        let archived: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM archived_documents WHERE document_id = ?1)",
+            params![manifest.document_id],
+            |r| r.get(0),
+        )?;
+        if archived {
+            return Err(CoreError::DocumentArchived(manifest.document_id.clone()));
+        }
+
         let outcome = self.record_version_in_tx(&tx, manifest, &manifest_hash, source)?;
         tx.commit()?;
         Ok(outcome)
@@ -4044,6 +4067,68 @@ mod tests {
                 .iter()
                 .all(|d| d.document_id != "doc-1"),
             "archived doc must NOT appear in list_documents after a move attempt",
+        );
+    }
+
+    #[test]
+    fn record_version_on_archived_doc_is_rejected_not_resurrected() {
+        // Issue #31 regression. The sync engine's archive-vs-pull race:
+        // the pull plan classifies doc A as Changed, the network fetch
+        // begins, the user archives A while bytes are in flight, then
+        // record_version(Pulled) lands. The pre-fix behaviour
+        // unconditionally INSERT-OR-UPDATEd into `documents`, leaving
+        // the doc simultaneously in `documents` AND `archived_documents`
+        // — the next push then shipped both manifests and the device
+        // dropped a doc the user never asked to delete. The contract
+        // now: record_version returns DocumentArchived, the row stays
+        // out of `documents`, and the archive entry is untouched.
+        let tmp = tempfile::tempdir().unwrap();
+        let lib = Library::open(tmp.path()).unwrap();
+        let m = seed_manifest(&lib, "doc-1", &[("a.rm", b"page-v1")]);
+        lib.record_version(&m, Source::Pulled).unwrap();
+
+        // The "user archives mid-pull" half of the race.
+        lib.archive_document("doc-1", ArchiveReason::Local).unwrap();
+        assert!(lib.is_archived("doc-1").unwrap());
+
+        // The "in-flight pull resumes" half — a fresh manifest with the
+        // same doc_id but different content (so the unchanged-hash
+        // short-circuit doesn't mask the bug).
+        let m2 = seed_manifest(&lib, "doc-1", &[("a.rm", b"page-v2")]);
+        let err = lib
+            .record_version(&m2, Source::Pulled)
+            .expect_err("archived doc must reject a Pulled record_version");
+        assert!(
+            matches!(err, CoreError::DocumentArchived(ref id) if id == "doc-1"),
+            "expected DocumentArchived, got {err:?}",
+        );
+
+        // Post-state: archive is intact, no live row, no double-tabling.
+        assert!(
+            lib.is_archived("doc-1").unwrap(),
+            "archive entry must survive the rejected pull",
+        );
+        assert!(
+            lib.list_documents()
+                .unwrap()
+                .iter()
+                .all(|d| d.document_id != "doc-1"),
+            "archived doc must NOT appear in list_documents after a rejected pull",
+        );
+        // And the push planner must see exactly the archive's
+        // deleted=true manifest, not a competing live one.
+        let live_row_count: i64 = {
+            let conn = lib.db.lock();
+            conn.query_row(
+                "SELECT COUNT(*) FROM documents WHERE document_id = ?1",
+                params!["doc-1"],
+                |r| r.get(0),
+            )
+            .unwrap()
+        };
+        assert_eq!(
+            live_row_count, 0,
+            "documents row must not be resurrected by a Pulled record_version",
         );
     }
 
