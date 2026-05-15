@@ -8,7 +8,7 @@ publish.workspace = true
 description = "reHydrate library core: content-addressed blob store, manifests, version log."
 
 [dependencies]
-fs4 = { version = "0.9", features = ["sync"] }
+fs4 = { version = "1.1", features = ["sync"] }
 hex = { workspace = true }
 rusqlite = { workspace = true }
 serde = { workspace = true }
