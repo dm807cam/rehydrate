@@ -431,7 +431,7 @@ impl Library {
                     .format(&time::format_description::well_known::Rfc3339)
                     .unwrap_or_default(),
             };
-            fs::write(&paths.library_json, serde_json::to_vec_pretty(&meta)?)?;
+            write_library_stamp_atomically(&paths, &meta)?;
         }
 
         let db = Db::open(&paths.db)?;
@@ -509,7 +509,49 @@ impl Library {
         }
         Ok(())
     }
+}
 
+/// Issue #32: write the library stamp via `<tmp>` → fsync → rename
+/// so a crash during initial stamp-out can never leave a
+/// half-written or zero-length `library.json`. The previous
+/// `fs::write` was truncate-in-place: a power loss between truncate
+/// and the final byte would create a non-empty-but-malformed file
+/// that `validate_library_path` then refused to parse on every
+/// subsequent open, locking the user out of their own library
+/// (blobs and SQLite untouched, but the stamp gate fails) until
+/// they hand-edited or deleted the file. Mirrors the atomic-write
+/// pattern BlobStore uses for content blobs.
+fn write_library_stamp_atomically(paths: &LibraryPaths, meta: &LibraryMeta) -> Result<()> {
+    use std::io::Write;
+    let bytes = serde_json::to_vec_pretty(meta)?;
+
+    // Stage to a sibling tmp file inside the library root so the
+    // final rename is intra-filesystem (and therefore atomic).
+    let mut tmp = tempfile::NamedTempFile::new_in(&paths.root)?;
+    tmp.write_all(&bytes)?;
+    tmp.as_file().sync_all()?;
+
+    // Atomic rename. `persist` keeps the tmp on disk and unlinks
+    // it from its random tmp name as it lands at the target; on
+    // failure the tmp is automatically cleaned up by the dropping
+    // NamedTempFile, so we never leak a `.tmp*` next to a missing
+    // library.json.
+    tmp.persist(&paths.library_json)
+        .map_err(|e| CoreError::Io(e.error))?;
+
+    // Best-effort fsync of the root so the rename's directory
+    // entry is durable too (same rationale as the blob fanout
+    // walk in BlobStore::put_reader — POSIX guarantees fsync(file)
+    // makes the bytes durable but not the entry that points at
+    // them). Best-effort: the file bytes are already durable from
+    // tmp.as_file().sync_all() above.
+    if let Ok(dir) = std::fs::File::open(&paths.root) {
+        let _ = dir.sync_all();
+    }
+    Ok(())
+}
+
+impl Library {
     pub fn paths(&self) -> &LibraryPaths {
         &self.paths
     }
@@ -3870,6 +3912,86 @@ mod tests {
         std::fs::write(tmp.path().join("library.json"), b"{not valid json").unwrap();
         let result = Library::open(tmp.path());
         assert!(matches!(result, Err(CoreError::InvalidPath(_))));
+    }
+
+    #[test]
+    fn fresh_library_open_writes_a_complete_parseable_stamp() {
+        // Issue #32 regression: the initial stamp-out used to be a
+        // truncate-in-place `fs::write`, so a crash mid-write left
+        // `library.json` half-written and the *next* open refused
+        // the directory entirely with InvalidPath — locking the
+        // user out of their library until they hand-edited or
+        // deleted the file. With the atomic write (tmp → fsync →
+        // rename), the post-state is binary: either `library.json`
+        // doesn't exist (caller can retry; the open branch fires
+        // again), or it exists and is the full pretty-JSON stamp.
+        //
+        // The truncate-mid-write crash itself can't be staged in a
+        // unit test without an injectable fault. The next-best
+        // assertion: after a successful Library::open, the file IS
+        // there, IS parseable as the full LibraryMeta shape, and
+        // no orphan `.tmp*` sibling lingers — which a regression
+        // back to plain `fs::write` (no tmp file at all) wouldn't
+        // notice on its own, but a regression to a partial atomic
+        // shape (write but never persist) would.
+        let tmp = tempfile::tempdir().unwrap();
+        let _lib = Library::open(tmp.path()).unwrap();
+
+        let stamp_path = tmp.path().join("library.json");
+        assert!(stamp_path.is_file(), "library.json must exist post-open");
+        let bytes = std::fs::read(&stamp_path).unwrap();
+        assert!(
+            !bytes.is_empty(),
+            "library.json must not be zero-length — that's the exact half-written shape #32 prevents",
+        );
+        let meta: LibraryMeta = serde_json::from_slice(&bytes)
+            .expect("library.json must be parseable as LibraryMeta after atomic stamp-out");
+        assert_eq!(meta.schema, LIBRARY_SCHEMA);
+        assert!(
+            uuid::Uuid::parse_str(&meta.library_id).is_ok(),
+            "library_id stamp must be a valid UUID, got {:?}",
+            meta.library_id,
+        );
+
+        // No leftover staging file. tempfile's NamedTempFile uses
+        // a `.tmp` prefix, but the persist call should have renamed
+        // it into place; a regression that wrote-but-never-persisted
+        // would leave an orphan we'd see here.
+        let leftovers: Vec<_> = std::fs::read_dir(tmp.path())
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|name| name.starts_with(".tmp") || name.ends_with(".tmp"))
+            .collect();
+        assert!(
+            leftovers.is_empty(),
+            "no .tmp* staging files should remain after open, found {leftovers:?}",
+        );
+    }
+
+    #[test]
+    fn manually_truncated_library_json_is_rejected_not_silently_overwritten() {
+        // Issue #32 boundary: the atomic write only fires when
+        // library.json doesn't exist (open-creates-stamp branch in
+        // Library::open). A partially-written file from an old
+        // pre-fix install is STILL a malformed stamp that
+        // validate_library_path must refuse — we must not silently
+        // overwrite the bad file with a fresh stamp, since the user
+        // could lose a recovery affordance (the malformed bytes
+        // sometimes contain a recoverable library_id) and because
+        // any non-empty file in a library root that fails to parse
+        // is a corruption signal worth surfacing.
+        let tmp = tempfile::tempdir().unwrap();
+        // Zero-length file simulates the exact crash-mid-truncate
+        // shape the old fs::write was vulnerable to.
+        std::fs::write(tmp.path().join("library.json"), b"").unwrap();
+        let err = Library::open(tmp.path())
+            .err()
+            .expect("zero-length library.json must NOT silently parse / succeed");
+        assert!(
+            matches!(err, CoreError::InvalidPath(_)),
+            "zero-length library.json must surface InvalidPath, got {err:?}",
+        );
     }
 
     #[test]
