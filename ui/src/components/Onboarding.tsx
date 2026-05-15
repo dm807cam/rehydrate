@@ -26,14 +26,23 @@ export function Onboarding({
   const [device, setDevice] = useState<DeviceState | null>(initialDevice);
 
   useEffect(() => {
+    // Issue #37: the onboarding flow can dismiss before the listener
+    // attach promise resolves (user clicks "Skip" fast, or the
+    // reachability watcher fires the auto-advance below before the
+    // listener was installed). Without `cancelled` the listener
+    // stays attached forever and `setDevice` runs against an
+    // unmounted component on every subsequent reachability event.
+    let cancelled = false;
     let unlisten: (() => void) | undefined;
     onDeviceReachable(() => {
       ipc.deviceState().then(setDevice).catch(() => {});
     }).then((u) => {
-      unlisten = u;
+      if (cancelled) u();
+      else unlisten = u;
     });
     return () => {
-      if (unlisten) unlisten();
+      cancelled = true;
+      unlisten?.();
     };
   }, []);
 

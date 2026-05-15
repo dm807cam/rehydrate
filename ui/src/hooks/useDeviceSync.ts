@@ -57,6 +57,13 @@ export function useDeviceSync(
   // the full `DeviceState` because the event also flips connected /
   // disconnected as a side effect of the watcher.
   useEffect(() => {
+    // Issue #37: if the parent unmounts this hook before the
+    // listener attach promise resolves, `unlisten` is still
+    // undefined when cleanup runs — the listener stays attached
+    // forever and the closure holds setDevice pointing at unmounted
+    // state. Track `cancelled` so the resolver either installs the
+    // unlisten or invokes it immediately if cleanup beat it.
+    let cancelled = false;
     let unlisten: (() => void) | undefined;
     onDeviceReachable(() => {
       ipc
@@ -66,10 +73,12 @@ export function useDeviceSync(
           /* deviceState is best-effort; a transient failure is fine */
         });
     }).then((u) => {
-      unlisten = u;
+      if (cancelled) u();
+      else unlisten = u;
     });
     return () => {
-      if (unlisten) unlisten();
+      cancelled = true;
+      unlisten?.();
     };
   }, []);
 
