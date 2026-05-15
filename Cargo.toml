@@ -40,7 +40,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 sha2 = "0.10"
 tempfile = "3"
-thiserror = "1"
+thiserror = "2"
 time = { version = "0.3", features = ["serde", "formatting", "parsing"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "fs", "io-util", "time", "net"] }
 tokio-util = { version = "0.7", features = ["io"] }

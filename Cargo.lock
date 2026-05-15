@@ -5437,7 +5437,7 @@ dependencies = [
  "serde_json",
  "sha2 0.10.9",
  "tempfile",
- "thiserror 1.0.69",
+ "thiserror 2.0.18",
  "time",
  "tracing",
  "uuid",
@@ -5455,7 +5455,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
- "thiserror 1.0.69",
+ "thiserror 2.0.18",
  "tokio",
  "tracing",
 ]
@@ -5465,7 +5465,7 @@ name = "rehydrate-http"
 version = "1.0.0"
 dependencies = [
  "serde_json",
- "thiserror 1.0.69",
+ "thiserror 2.0.18",
  "ureq",
  "url",
 ]
@@ -5485,7 +5485,7 @@ dependencies = [
  "serde_json",
  "sha2 0.10.9",
  "tempfile",
- "thiserror 1.0.69",
+ "thiserror 2.0.18",
  "tokio",
  "tracing",
 ]
@@ -5500,7 +5500,7 @@ dependencies = [
  "rehydrate-http",
  "serde",
  "serde_json",
- "thiserror 1.0.69",
+ "thiserror 2.0.18",
  "time",
  "tiny_http",
  "tracing",
@@ -5527,7 +5527,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
- "thiserror 1.0.69",
+ "thiserror 2.0.18",
  "tokio",
  "tracing",
 ]
