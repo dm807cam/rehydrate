@@ -770,6 +770,205 @@ pub async fn open_document(
     Ok(cache_path)
 }
 
+/// Path bundle returned by [`prepare_export_pdf`]. The `file` is the
+/// staged document — the path the JS side hands to
+/// `@crabnebula/tauri-plugin-drag`'s `startDrag`. The `icon` is the
+/// drag preview image the plugin requires; we stage the app's 32×32
+/// PNG once into the export cache root so the renderer can pass a
+/// real filesystem path even though the icon lives inside the
+/// macOS app bundle at build time.
+#[derive(Serialize)]
+pub struct ExportDragPaths {
+    pub file: PathBuf,
+    pub icon: PathBuf,
+}
+
+/// Bytes for the 32×32 app icon, copied into the export cache at
+/// first use so the drag-source plugin has a stable filesystem path
+/// for the drag preview. Bundled at build time so a corrupted /
+/// missing bundle resource doesn't break the drag.
+const EXPORT_DRAG_ICON_PNG: &[u8] = include_bytes!("../icons/32x32.png");
+
+/// Stage a document on disk under a clean, human-friendly filename
+/// so the renderer can hand the path to `tauri-plugin-drag` and the
+/// OS sees a real file dropping onto the Desktop (or Finder, Mail,
+/// etc.). Mirrors the body-type branching in `open_document`:
+///
+/// * PDF/EPUB documents → the stored blob is copied verbatim (no
+///   re-encoding).
+/// * Notebooks → `rehydrate-render` renders the `.rm` strokes to a
+///   multi-page PDF (same renderer the Preview cache uses).
+///
+/// The staging file lives inside a per-key directory so the filename
+/// itself is the clean, dropped-as-is name — Finder will land
+/// "My Notes.pdf" rather than the hash-suffixed cache name. The
+/// directory is the unit of cache-busting:
+/// `~/.cache/rehydrate/export/{document_id}-{key}/{visible_name}.{ext}`.
+///
+/// Idempotent and safe to call from a hover handler: a cache hit
+/// returns the existing paths without re-rendering. The renderer
+/// pre-warms on `onMouseEnter` so dragstart is usually instant.
+#[tauri::command]
+pub async fn prepare_export_pdf(
+    document_id: String,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<ExportDragPaths, String> {
+    use rehydrate_core::Manifest;
+
+    let lib = lib_arc(&state).await?;
+    let docs = lib.list_documents().map_err(err)?;
+    let doc = docs
+        .iter()
+        .find(|d| d.document_id == document_id)
+        .ok_or_else(|| format!("document {document_id} not in library"))?;
+    let manifest_bytes = lib.read_blob(&doc.current_manifest).map_err(err)?;
+    let manifest = Manifest::from_canonical_json(&manifest_bytes).map_err(err)?;
+
+    let export_root = directories::ProjectDirs::from("app", "rehydrate", "reHydrate")
+        .map(|d| d.cache_dir().to_path_buf())
+        .ok_or_else(|| "no cache directory on this platform".to_string())?
+        .join("export");
+
+    let safe_name = sanitize(&doc.visible_name);
+
+    // Resolve the body. PDF/EPUB documents are copied verbatim;
+    // notebooks render through `rehydrate_render`. Path mirrors
+    // `open_document` so the body-type detection stays in lockstep
+    // (a future format addition only has to be added in one place,
+    // since I'd want both `open_document` and `prepare_export_pdf`
+    // to learn about it together).
+    let (ext, key, source_bytes) = if let Some(body) = manifest
+        .files
+        .iter()
+        .find(|f| f.path.ends_with(".pdf") || f.path.ends_with(".epub"))
+    {
+        // Same defensive extension allow-list as open_document — a
+        // crafted manifest can't extend the dropped filename to e.g.
+        // `.command`. The blob content hash is enough to key the
+        // cache: it changes iff the body changes.
+        let ext = if body.path.ends_with(".pdf") {
+            "pdf"
+        } else {
+            "epub"
+        };
+        let bytes = lib.read_blob(&body.sha256).map_err(err)?;
+        (ext, body.sha256.as_str().to_string(), bytes)
+    } else {
+        // Notebook. The cache key combines manifest hash (covers all
+        // ink + typed-text + transcript state via Manifest's content
+        // hash) with EXPORT_LAYOUT_VERSION (covers renderer
+        // changes). Independent of the Preview cache key — a future
+        // export-only change (e.g. an invisible OCR text layer)
+        // won't invalidate Preview PDFs and vice-versa.
+        let key = format!(
+            "{}-{}",
+            doc.current_manifest.as_str(),
+            rehydrate_render::EXPORT_LAYOUT_VERSION,
+        );
+        // Build the PDF on a worker thread — parsing 100s of pages
+        // of `.rm` and stroking each one would otherwise block the
+        // tokio runtime for several seconds on a cold render. The
+        // hover prefetch is what keeps the actual dragstart cheap;
+        // this branch only does real work the first time per
+        // (document, manifest, layout-version) tuple.
+        let render_doc_id = doc.document_id.clone();
+        let render_visible_name = doc.visible_name.clone();
+        let render_manifest = manifest.clone();
+        let render_lib = Arc::clone(&lib);
+        let app_for_warn = app.clone();
+        let bytes = tauri::async_runtime::spawn_blocking(move || -> Result<Vec<u8>, String> {
+            let mut rm_pages: Vec<_> = render_manifest
+                .files
+                .iter()
+                .filter(|f| {
+                    f.path.ends_with(".rm")
+                        && !f.path.contains(".thumbnails")
+                        && !f.path.ends_with(".local")
+                })
+                .collect();
+            rm_pages.sort_by(|a, b| a.path.cmp(&b.path));
+            if !rm_pages.is_empty() {
+                let mut bufs = Vec::with_capacity(rm_pages.len());
+                for f in &rm_pages {
+                    bufs.push(render_lib.read_blob(&f.sha256).map_err(err)?);
+                }
+                match rehydrate_render::build_pdf_from_rm_files(&render_visible_name, &bufs) {
+                    Ok(b) => Ok(b),
+                    Err(e) => {
+                        // Same legacy-format warning open_document
+                        // emits — keep the user-visible signal
+                        // consistent across the two entry points.
+                        tracing::warn!(
+                            "export rendering failed for {render_doc_id}: {e}; falling back to thumbnails"
+                        );
+                        let _ = app_for_warn.emit(
+                            "document:legacy-format-warning",
+                            format!(
+                                "\"{render_visible_name}\" uses an older notebook format. The export falls \
+                                 back to lower-resolution thumbnails. Sync the tablet to upgrade the \
+                                 notebook to the current format.",
+                            ),
+                        );
+                        thumbnail_fallback_pdf(&render_lib, &render_manifest, &render_visible_name)
+                    }
+                }
+            } else {
+                thumbnail_fallback_pdf(&render_lib, &render_manifest, &render_visible_name)
+            }
+        })
+        .await
+        .map_err(err)??;
+        ("pdf", key, bytes)
+    };
+
+    // Per-document staging dir: the filename inside is the clean
+    // human name, so OS drop targets see "My Notes.pdf" rather than
+    // a hash-suffixed cache file. Directory name carries the
+    // content key (so a stale entry can't shadow a refreshed one
+    // from a different document or manifest).
+    let staging_dir = export_root.join(format!("{document_id}-{key}"));
+    let staging_path = staging_dir.join(format!("{safe_name}.{ext}"));
+    if !staging_path.exists() {
+        std::fs::create_dir_all(&staging_dir).map_err(err)?;
+        // Write atomically: a same-dir tempfile + rename means the
+        // OS never sees a partially-written staging file even if the
+        // renderer crashes mid-write. Critical because the drag
+        // gesture can fire immediately after this command resolves;
+        // a half-written PDF would surface as a corrupt drop.
+        let mut tmp = tempfile::NamedTempFile::new_in(&staging_dir).map_err(err)?;
+        use std::io::Write;
+        tmp.write_all(&source_bytes).map_err(err)?;
+        tmp.persist(&staging_path)
+            .map_err(|e| format!("persist staging file: {e}"))?;
+    }
+
+    // Stage the drag-preview icon once per export-cache root. The
+    // plugin requires a filesystem path for the icon (its NSImage
+    // initializer reads from disk on macOS); the app's PNG icon
+    // ships compiled into the binary, so we materialise it next to
+    // the staged document on demand. Cheap (1 KB write) and only
+    // happens on first export per cache root.
+    let icon_path = export_root.join(".drag-icon.png");
+    if !icon_path.exists() {
+        std::fs::create_dir_all(&export_root).map_err(err)?;
+        let mut tmp = tempfile::NamedTempFile::new_in(&export_root).map_err(err)?;
+        use std::io::Write;
+        tmp.write_all(EXPORT_DRAG_ICON_PNG).map_err(err)?;
+        // Race tolerance: two parallel `prepare_export_pdf` calls
+        // could both reach this branch and the second persist would
+        // overwrite the first; that's fine because the icon bytes
+        // are identical. `persist` clobbers on Unix anyway.
+        tmp.persist(&icon_path)
+            .map_err(|e| format!("persist drag icon: {e}"))?;
+    }
+
+    Ok(ExportDragPaths {
+        file: staging_path,
+        icon: icon_path,
+    })
+}
+
 /// Open an https URL in the user's default browser. The renderer
 /// uses this to surface the support / Issues link from the About
 /// dialog. Restricted to https://github.com/dm807cam/rehydrate/ so a

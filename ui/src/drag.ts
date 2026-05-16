@@ -9,9 +9,10 @@
 // single reorder doesn't have to renumber every sibling. The same
 // pattern reMarkable uses in its own metadata layout.
 
+import { startDrag } from "@crabnebula/tauri-plugin-drag";
 import type { DragEvent as ReactDragEvent } from "react";
 
-import type { FolderEntry } from "./types";
+import type { ExportDragPaths, FolderEntry } from "./types";
 
 const DOC_DRAG_MIME = "application/x-rehydrate-doc";
 const DOC_DRAG_BATCH_MIME = "application/x-rehydrate-doc-batch";
@@ -140,4 +141,28 @@ export function computeReorderSortIndex(
   if (before) return before.sort_index + 1;
   if (after) return after.sort_index - 1;
   return 0;
+}
+
+/// Hand the staged document path to the OS as a native drag source.
+/// Used by the document row/tile's `onDragStart` when the user holds
+/// ⌥ (Option) — at that point we cancel the HTML5 drag, ask the
+/// backend to materialise the document under a clean filename, and
+/// call into `@crabnebula/tauri-plugin-drag` which talks to
+/// NSPasteboard on macOS so Finder / the Desktop / Mail see a real
+/// file drop.
+///
+/// macOS quirk: `startDrag` must be invoked inside the same
+/// user-gesture turn as the `mousedown` that started the drag. The
+/// caller is expected to `await` the IPC that produces `paths` first
+/// — keep that await as short as possible (hover-prefetch makes it
+/// effectively zero for hot caches), or the gesture window closes
+/// and the drag silently fails.
+export async function startNativeExportDrag(
+  paths: ExportDragPaths,
+): Promise<void> {
+  await startDrag({
+    item: [paths.file],
+    icon: paths.icon,
+    mode: "copy",
+  });
 }

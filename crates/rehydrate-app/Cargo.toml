@@ -40,6 +40,12 @@ serde_json = { workspace = true }
 tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "2"
 tauri-plugin-opener = "2"
+# Native OS drag-source so notebook tiles can be dragged out of the
+# webview into Finder / the Desktop and have the OS receive a real
+# file path. Pure passthrough on the Rust side — the JS counterpart
+# (`@crabnebula/tauri-plugin-drag`) calls `startDrag` from the
+# `onDragStart` handler with a path produced by `prepare_export_pdf`.
+tauri-plugin-drag = { workspace = true }
 time = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }

@@ -67,6 +67,19 @@ use rm_parser::RemarkableFile;
 /// elsewhere in the workspace.
 pub const PREVIEW_LAYOUT_VERSION: &str = "ink-v17";
 
+/// Version suffix included in the per-document drag-out export cache
+/// key. Independent of [`PREVIEW_LAYOUT_VERSION`] so a future change
+/// to the export pipeline (e.g. embedding an invisible OCR text layer
+/// for searchable PDFs) doesn't invalidate the Preview cache, and
+/// vice-versa.
+///
+/// Today the export pipeline produces byte-identical PDFs to the
+/// Preview pipeline — the cache is separated so callers can drop a
+/// file with a clean human filename into a per-document staging
+/// directory without colliding with the Preview cache's hash-laden
+/// filenames.
+pub const EXPORT_LAYOUT_VERSION: &str = "export-v1";
+
 const PAGE_W_MM: f32 = 210.0;
 const PAGE_H_MM: f32 = 297.0;
 const PT_PER_INCH: f32 = 72.0;
