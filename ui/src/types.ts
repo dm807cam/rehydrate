@@ -69,6 +69,15 @@ export interface ExportResult {
   file_count: number;
 }
 
+/// Paths returned by `ipc.prepareExportPdf`. `file` is the staged
+/// document (passed as the `item` to the native drag-out plugin so
+/// the OS sees a real file drop), `icon` is the drag-preview PNG
+/// the plugin requires alongside it.
+export interface ExportDragPaths {
+  file: string;
+  icon: string;
+}
+
 export interface LibrarySummary {
   path: string;
   document_count: number;

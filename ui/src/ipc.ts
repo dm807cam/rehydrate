@@ -7,6 +7,7 @@ import type {
   DeviceInfo,
   DeviceState,
   DocumentSummary,
+  ExportDragPaths,
   ExportFormat,
   ExportResult,
   FolderEntry,
@@ -88,6 +89,12 @@ export const ipc = {
     invoke<void>("purge_archived_document", { documentId }),
   openDocument: (documentId: string) =>
     invoke<string>("open_document", { documentId }),
+  /// Stage a document for OS-level drag-out. Returns the staged file
+  /// path (which Finder will land as `<visible_name>.<ext>`) and a
+  /// drag-preview icon path the drag plugin requires. Idempotent and
+  /// content-keyed — calling it on hover to warm the cache is safe.
+  prepareExportPdf: (documentId: string) =>
+    invoke<ExportDragPaths>("prepare_export_pdf", { documentId }),
   documentThumbnail: (documentId: string) =>
     invoke<string | null>("document_thumbnail", { documentId }),
   getHistory: (documentId: string) =>
