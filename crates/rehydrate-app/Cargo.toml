@@ -40,12 +40,17 @@ serde_json = { workspace = true }
 tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "2"
 tauri-plugin-opener = "2"
-# Native OS drag-source so notebook tiles can be dragged out of the
-# webview into Finder / the Desktop and have the OS receive a real
-# file path. Pure passthrough on the Rust side — the JS counterpart
-# (`@crabnebula/tauri-plugin-drag`) calls `startDrag` from the
-# `onDragStart` handler with a path produced by `prepare_export_pdf`.
-tauri-plugin-drag = { workspace = true }
+# Native OS drag-source. Used from `commands::start_export_drag` to
+# hand a staged file path to the OS — gated to macOS for now (Linux
+# behaviour is unverified and Alt-drag is a system shortcut on
+# Windows). We depend on the lower-level `drag` crate rather than
+# `tauri-plugin-drag` so the path supplied to `drag::start_drag`
+# never crosses the JS/IPC boundary: an XSS in the renderer can't
+# trick the OS into dragging arbitrary files (the plugin's
+# `plugin:drag|start_drag` command would otherwise accept any path
+# from JS).
+[target.'cfg(target_os = "macos")'.dependencies]
+drag = { workspace = true }
 time = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
@@ -53,6 +58,13 @@ tracing-appender = { workspace = true }
 tracing-subscriber = { workspace = true }
 base64 = "0.22"
 tempfile = { workspace = true }
+
+[dev-dependencies]
+# Used by `export_ocr_tests` to encode a valid 1×1 PNG at test time
+# without hand-rolling CRC-correct bytes. The renderer crate already
+# depends on `image` for the thumbnail-fallback path, so this is the
+# same encoder the production path uses on the read side.
+image = { workspace = true }
 
 [features]
 # `devtools` enables the Tauri webview inspector (F12 / Cmd+Opt+I).

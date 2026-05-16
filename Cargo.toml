@@ -50,7 +50,14 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 printpdf = { version = "0.9", features = ["png"] }
 image = { version = "0.25", default-features = false, features = ["png"] }
 uuid = { version = "1", features = ["v4", "serde"] }
-tauri-plugin-drag = "2"
+# Native OS drag-source. We depend on the underlying `drag` crate
+# directly (not the Tauri plugin) so the gesture is initiated from a
+# Rust command — the plugin's generic `plugin:drag|start_drag` IPC
+# accepts arbitrary filesystem paths from JS, which would let a
+# compromised renderer leak files outside the staged export cache.
+# Routing the drag through our own `start_export_drag` command keeps
+# the path allow-list server-side.
+drag = "2"
 
 [profile.release]
 lto = "thin"

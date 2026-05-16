@@ -49,7 +49,6 @@ import {
   readFolderDragData,
   setDocumentDragData,
   setFolderDragData,
-  startNativeExportDrag,
 } from "./drag";
 import { formatError } from "./formatError";
 import type {
@@ -555,11 +554,26 @@ export function App() {
     }
   }
 
-  // ⌥-drag handler: ask the backend to stage a clean-filename copy
-  // (rendering the notebook to PDF if needed) and hand the path to
-  // the OS via `tauri-plugin-drag`. Wrapped in useCallback so the
-  // child rows / tiles don't get a fresh function identity every
-  // render — they'd otherwise drop their drag-start memoisation.
+  // Best-effort macOS detection used to shape the per-row tooltip
+  // copy. NOT a gate on the dragstart branch — that lives in the
+  // backend, which rejects non-mac with a clean error toast. Putting
+  // the gate here too was a footgun: a stray `navigator.platform`
+  // value would silently route the drag through the HTML5 path,
+  // which writes the document_id onto the pasteboard as `text/plain`
+  // and Finder turns the drop into a `.textClipping`.
+  const isMacOs = useMemo(() => {
+    if (typeof navigator === "undefined") return false;
+    return /mac/i.test(navigator.platform || "");
+  }, []);
+
+  // ⌥-drag handler: ask the backend to stage the file under a clean
+  // filename AND begin the OS-drag in a single IPC. The previous
+  // two-call flow (`prepareExportPdf` then a JS-side `startDrag`)
+  // routed an absolute path back through the renderer and started
+  // the drag from the JS plugin — an XSS could substitute any path
+  // there. Routing both halves through one Rust command keeps the
+  // path allow-list server-side.
+  //
   // Errors surface as a toast: macOS' drag gesture has a short
   // window and a cold cache can blow past it; the toast tells the
   // user to retry rather than leave them wondering why nothing
@@ -567,8 +581,7 @@ export function App() {
   const startExportDrag = useCallback(
     async (d: DocumentSummary) => {
       try {
-        const paths = await ipc.prepareExportPdf(d.document_id);
-        await startNativeExportDrag(paths);
+        await ipc.startExportDrag(d.document_id);
       } catch (e) {
         toast.show({
           tone: "warn",
@@ -580,21 +593,60 @@ export function App() {
     [toast],
   );
 
+  // Right-click "Export PDF…" — same staging path as the drag-out
+  // gesture, but the destination is chosen via the system folder
+  // picker instead of by where the user drops. Works on every
+  // platform (no native-drag dependency) and gives users who don't
+  // want to fight the ⌥-modifier a no-gesture alternative.
+  const exportDocumentPdf = useCallback(
+    async (d: DocumentSummary) => {
+      try {
+        const written = await ipc.exportDocumentPdf(d.document_id);
+        if (written === null) return; // user cancelled the picker
+        toast.show({
+          tone: "info",
+          body: `Exported "${d.visible_name}" to ${written}`,
+          duration: 4000,
+        });
+      } catch (e) {
+        toast.show({
+          tone: "warn",
+          body: `Couldn't export "${d.visible_name}": ${formatError(e)}`,
+          duration: 6000,
+        });
+      }
+    },
+    [toast],
+  );
+
   // Hover prefetch: warms the export cache so that when the user
-  // actually starts the ⌥-drag, the IPC returns instantly and
-  // `startDrag` fires inside macOS' user-gesture window. Cheap on
-  // cache hit (one stat); on cache miss it pre-renders the PDF in
-  // the background. Errors are swallowed — this is a best-effort
-  // optimisation and the dragstart path will report any real
-  // failure.
+  // actually starts the ⌥-drag, the backend command returns inside
+  // macOS' user-gesture window. Cheap on cache hit (one stat); on
+  // cache miss it pre-renders the PDF in the background.
   //
-  // Dedup on the JS side so a fast scroll across 100 tiles doesn't
-  // queue 100 cold renders. The backend command is already
-  // idempotent (it checks for an existing staging file before
-  // rendering), but skipping the IPC round-trip entirely is still
-  // cheaper.
+  // Gated on TWO conditions to avoid the "scroll past 500 notebooks
+  // and render every one" footgun the first revision had:
+  //
+  //   1. A 250 ms hover dwell — cleared on mouseleave, so a cursor
+  //      that just brushes the row never queues a render.
+  //   2. ⌥ already held — if the user is committing to an export
+  //      gesture, we want the cache warm immediately, dwell or no.
+  //
+  // Errors are swallowed: this is best-effort and the dragstart
+  // path will report any real failure.
   const prefetchedExportsRef = useRef<Set<string>>(new Set());
-  const prefetchExportDrag = useCallback((documentId: string) => {
+  const prefetchTimerRef = useRef<number | null>(null);
+
+  // Clear prefetch dedup when the library changes — stale ids would
+  // otherwise linger for the lifetime of the session and could
+  // (a) prevent a refetch after the document is reopened under a
+  // new manifest hash, or (b) mask a real failure when re-exporting
+  // a doc that was just deleted from disk.
+  useEffect(() => {
+    prefetchedExportsRef.current.clear();
+  }, [libraryPath]);
+
+  const queuePrefetch = useCallback((documentId: string) => {
     if (prefetchedExportsRef.current.has(documentId)) return;
     prefetchedExportsRef.current.add(documentId);
     void ipc.prepareExportPdf(documentId).catch(() => {
@@ -604,6 +656,36 @@ export function App() {
       // manifest hash between the prefetch and the drag).
       prefetchedExportsRef.current.delete(documentId);
     });
+  }, []);
+
+  const prefetchExportDrag = useCallback(
+    (documentId: string, opts?: { altHeld?: boolean }) => {
+      if (!isMacOs) return;
+      // ⌥ already down → the user has committed to a gesture, fire
+      // immediately so the cache is warm by the time `dragstart`
+      // runs.
+      if (opts?.altHeld) {
+        queuePrefetch(documentId);
+        return;
+      }
+      // Cold hover → only fire after a 250 ms dwell. Idle scrolling
+      // across the library shouldn't queue any work.
+      if (prefetchTimerRef.current !== null) {
+        window.clearTimeout(prefetchTimerRef.current);
+      }
+      prefetchTimerRef.current = window.setTimeout(() => {
+        prefetchTimerRef.current = null;
+        queuePrefetch(documentId);
+      }, 250);
+    },
+    [isMacOs, queuePrefetch],
+  );
+
+  const cancelExportPrefetch = useCallback(() => {
+    if (prefetchTimerRef.current !== null) {
+      window.clearTimeout(prefetchTimerRef.current);
+      prefetchTimerRef.current = null;
+    }
   }, []);
 
   // ---- Drag & drop, archive, move ---------------------------------------
@@ -1916,8 +1998,11 @@ export function App() {
                   onMove={(d) => startMoveDocs([d.document_id])}
                   onTranscribe={(d) => startOcrJob(d)}
                   onViewTranscript={setTranscriptDoc}
+                  exportEnabled={isMacOs}
                   onStartExportDrag={startExportDrag}
+                  onExportToFolder={exportDocumentPdf}
                   onPrefetchExport={prefetchExportDrag}
+                  onCancelPrefetchExport={cancelExportPrefetch}
                   leavingIds={leavingIds}
                   emptyHint={emptyHintFor(view)}
                 />
@@ -1935,8 +2020,11 @@ export function App() {
                   onMove={(d) => startMoveDocs([d.document_id])}
                   onTranscribe={(d) => startOcrJob(d)}
                   onViewTranscript={setTranscriptDoc}
+                  exportEnabled={isMacOs}
                   onStartExportDrag={startExportDrag}
+                  onExportToFolder={exportDocumentPdf}
                   onPrefetchExport={prefetchExportDrag}
+                  onCancelPrefetchExport={cancelExportPrefetch}
                   leavingIds={leavingIds}
                   emptyHint={emptyHintFor(view)}
                 />
@@ -2629,8 +2717,11 @@ function DocumentList({
   onMove,
   onTranscribe,
   onViewTranscript,
+  exportEnabled,
   onStartExportDrag,
+  onExportToFolder,
   onPrefetchExport,
+  onCancelPrefetchExport,
   leavingIds,
   emptyHint,
 }: {
@@ -2649,8 +2740,21 @@ function DocumentList({
   onMove: (d: DocumentSummary) => void;
   onTranscribe: (d: DocumentSummary) => void;
   onViewTranscript: (d: DocumentSummary) => void;
+  /// True iff the host OS supports the ⌥-drag export gesture (mac
+  /// only). Drives the tooltip copy. The dragstart handler does
+  /// NOT use this — the backend rejects non-mac platforms instead,
+  /// so a flaky `navigator.platform` value can't silently fall
+  /// through to the HTML5 path (which would write the document_id
+  /// onto the pasteboard as `text/plain` and Finder would turn it
+  /// into a `.textClipping`).
+  exportEnabled: boolean;
   onStartExportDrag: (d: DocumentSummary) => void;
-  onPrefetchExport: (documentId: string) => void;
+  onExportToFolder: (d: DocumentSummary) => void;
+  onPrefetchExport: (
+    documentId: string,
+    opts?: { altHeld?: boolean },
+  ) => void;
+  onCancelPrefetchExport: () => void;
   leavingIds: Set<string>;
   emptyHint: { title: string; body: string };
 }) {
@@ -2665,6 +2769,10 @@ function DocumentList({
       </div>
     );
   }
+  // Suffix appended to the per-row tooltip when ⌥-drag export is
+  // wired up. Hidden on non-mac so the affordance isn't advertised
+  // on platforms where the backend would reject the gesture.
+  const exportHint = exportEnabled ? " · ⌥-drag to export" : "";
   return (
     <table className={`docs${selectMode ? " select-mode" : ""}`}>
       <thead>
@@ -2691,17 +2799,25 @@ function DocumentList({
               }${leaving ? " leaving" : ""}`}
               title={
                 selectMode
-                  ? "Click to toggle · ⇧-click for range · drag to move · ⌥-drag to export"
-                  : "Click to open · ⌘-click to start selecting · drag to move · ⌥-drag to export"
+                  ? `Click to toggle · ⇧-click for range · drag to move${exportHint}`
+                  : `Click to open · ⌘-click to start selecting · drag to move${exportHint}`
               }
               draggable
               onDragStart={(e) => {
                 // ⌥-drag is the "export out to Finder/Desktop"
                 // gesture: cancel the HTML5 drag (so the internal
-                // folder-move handlers don't see it) and start a
-                // native OS drag-source via tauri-plugin-drag.
-                // Without ⌥, the existing internal drag path
-                // (folder reorder, batch move) runs unchanged.
+                // folder-move handlers don't see it) and ask the
+                // backend to begin a native OS drag-source. Without
+                // ⌥, the existing internal drag path (folder
+                // reorder, batch move) runs unchanged.
+                //
+                // The platform gate (mac-only) lives in the backend
+                // — guarding here on `exportEnabled` once let a
+                // bad `navigator.platform` value silently fall
+                // through to the HTML5 path, which puts the
+                // document_id on the pasteboard as `text/plain` and
+                // turned the drop into a `.textClipping` instead of
+                // the staged PDF.
                 if (e.altKey) {
                   e.preventDefault();
                   onStartExportDrag(d);
@@ -2713,7 +2829,10 @@ function DocumentList({
                 setDocumentDragData(e, d.document_id, ids);
                 setCustomDragImage(e, d.visible_name, ids.length, DRAG_ICON_SVG);
               }}
-              onMouseEnter={() => onPrefetchExport(d.document_id)}
+              onMouseEnter={(e) =>
+                onPrefetchExport(d.document_id, { altHeld: e.altKey })
+              }
+              onMouseLeave={onCancelPrefetchExport}
               onClick={(e) =>
                 onClickRow(d, {
                   metaKey: e.metaKey,
@@ -2773,6 +2892,11 @@ function DocumentList({
                       onClick: () => onMove(d),
                     },
                     {
+                      label: "Export PDF…",
+                      icon: <Icon name="pdf" />,
+                      onClick: () => onExportToFolder(d),
+                    },
+                    {
                       label: "Convert to text…",
                       icon: <Icon name="wand" />,
                       onClick: () => onTranscribe(d),
@@ -2827,8 +2951,11 @@ function DocumentGrid({
   onMove,
   onTranscribe,
   onViewTranscript,
+  exportEnabled,
   onStartExportDrag,
+  onExportToFolder,
   onPrefetchExport,
+  onCancelPrefetchExport,
   leavingIds,
   emptyHint,
 }: {
@@ -2847,8 +2974,15 @@ function DocumentGrid({
   onMove: (d: DocumentSummary) => void;
   onTranscribe: (d: DocumentSummary) => void;
   onViewTranscript: (d: DocumentSummary) => void;
+  /// See `DocumentList` for the platform-gating rationale.
+  exportEnabled: boolean;
   onStartExportDrag: (d: DocumentSummary) => void;
-  onPrefetchExport: (documentId: string) => void;
+  onExportToFolder: (d: DocumentSummary) => void;
+  onPrefetchExport: (
+    documentId: string,
+    opts?: { altHeld?: boolean },
+  ) => void;
+  onCancelPrefetchExport: () => void;
   leavingIds: Set<string>;
   emptyHint: { title: string; body: string };
 }) {
@@ -2863,6 +2997,9 @@ function DocumentGrid({
       </div>
     );
   }
+  const tileTitle = exportEnabled
+    ? "Click to open · drag to move · ⌥-drag to export"
+    : "Click to open · drag to move";
   return (
     <div className="docs-grid">
       {documents.map((d) => {
@@ -2874,11 +3011,12 @@ function DocumentGrid({
             className={`tile${isSelected ? " selected" : ""}${
               focusId === d.document_id && !isSelected ? " focused" : ""
             }${leaving ? " leaving" : ""}`}
-            title="Click to open · drag to move · ⌥-drag to export"
+            title={tileTitle}
             draggable
             onDragStart={(e) => {
               // See the matching DocumentList handler for the ⌥
-              // branch rationale.
+              // branch rationale (and why the mac-only gate lives
+              // in the backend, not here).
               if (e.altKey) {
                 e.preventDefault();
                 onStartExportDrag(d);
@@ -2891,7 +3029,10 @@ function DocumentGrid({
               setDocumentDragData(e, d.document_id, ids);
               setCustomDragImage(e, d.visible_name, ids.length, DRAG_ICON_SVG);
             }}
-            onMouseEnter={() => onPrefetchExport(d.document_id)}
+            onMouseEnter={(e) =>
+              onPrefetchExport(d.document_id, { altHeld: e.altKey })
+            }
+            onMouseLeave={onCancelPrefetchExport}
             onClick={(e) =>
               onClickRow(d, {
                 metaKey: e.metaKey,
@@ -2967,6 +3108,11 @@ function DocumentGrid({
                     label: "Move to folder…",
                     icon: <Icon name="folder" />,
                     onClick: () => onMove(d),
+                  },
+                  {
+                    label: "Export PDF…",
+                    icon: <Icon name="pdf" />,
+                    onClick: () => onExportToFolder(d),
                   },
                   {
                     label: "Convert to text…",

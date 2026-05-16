@@ -26,14 +26,13 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
-        // Native OS drag-source so the renderer can drag a rendered
-        // notebook PDF (or a stored PDF/EPUB blob) out of the window
-        // to Finder / the Desktop / Mail. The plugin exposes a
-        // `plugin:drag|start_drag` IPC command — invoked from
-        // `@crabnebula/tauri-plugin-drag` in `ui/src/drag.ts`. The
-        // Rust side does not touch this plugin directly; it just
-        // needs to be registered so the JS half can call it.
-        .plugin(tauri_plugin_drag::init())
+        // Drag-out export is exposed via the `start_export_drag`
+        // command (commands.rs) rather than the generic
+        // `tauri-plugin-drag` JS plugin. Routing it through our own
+        // command keeps the OS-drag path allow-list server-side: the
+        // command takes a document_id, validates it against the
+        // library, and only ever drags a staged file under the
+        // export cache root.
         .manage(AppState::new())
         .setup(|app| {
             commands::spawn_reachability_watcher(app.handle().clone());
@@ -64,6 +63,8 @@ pub fn run() {
             commands::purge_archived_document,
             commands::open_document,
             commands::prepare_export_pdf,
+            commands::start_export_drag,
+            commands::export_document_pdf,
             commands::document_thumbnail,
             commands::get_history,
             commands::set_version_note,

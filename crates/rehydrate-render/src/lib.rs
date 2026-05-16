@@ -39,7 +39,8 @@ use image::ImageReader;
 use printpdf::{
     BuiltinFont, Color, ExtendedGraphicsState, ExtendedGraphicsStateId, Line as PdfLine,
     LineCapStyle, LineDashPattern, LineJoinStyle, LinePoint, Mm, Op, PdfDocument, PdfFontHandle,
-    PdfPage, PdfSaveOptions, Point, Pt, RawImage, Rgb, TextItem as PdfTextItem, XObjectTransform,
+    PdfPage, PdfSaveOptions, Point, Pt, RawImage, Rgb, TextItem as PdfTextItem, TextRenderingMode,
+    XObjectTransform,
 };
 use rm_parser::shared::{pen_color::PenColor, tool::Tool};
 use rm_parser::v6::block::Block;
@@ -68,17 +69,22 @@ use rm_parser::RemarkableFile;
 pub const PREVIEW_LAYOUT_VERSION: &str = "ink-v17";
 
 /// Version suffix included in the per-document drag-out export cache
-/// key. Independent of [`PREVIEW_LAYOUT_VERSION`] so a future change
-/// to the export pipeline (e.g. embedding an invisible OCR text layer
-/// for searchable PDFs) doesn't invalidate the Preview cache, and
+/// key. Independent of [`PREVIEW_LAYOUT_VERSION`] so changes to the
+/// export pipeline (e.g. embedding an invisible OCR text layer for
+/// searchable PDFs) don't invalidate the Preview cache, and
 /// vice-versa.
 ///
-/// Today the export pipeline produces byte-identical PDFs to the
-/// Preview pipeline — the cache is separated so callers can drop a
-/// file with a clean human filename into a per-document staging
-/// directory without colliding with the Preview cache's hash-laden
-/// filenames.
-pub const EXPORT_LAYOUT_VERSION: &str = "export-v1";
+/// Version history:
+/// - `export-v1` — initial export = byte-identical to Preview output.
+/// - `export-v2` — invisible OCR text layer per page when the
+///   document has a `ocr/transcript.md` derived artefact, all text
+///   stacked at the page's top-left.
+/// - `export-v3` — invisible OCR text layer placed per-line: the
+///   renderer clusters strokes into visual lines and pairs each
+///   cluster (by index) with a line of the page's transcript, so
+///   Preview's Cmd-F highlight rectangle lands on the matching
+///   patch of ink rather than at the page corner.
+pub const EXPORT_LAYOUT_VERSION: &str = "export-v3";
 
 const PAGE_W_MM: f32 = 210.0;
 const PAGE_H_MM: f32 = 297.0;
@@ -90,7 +96,19 @@ fn mm_to_pt(mm: f32) -> f32 {
 }
 
 /// Build a multi-page A4 PDF from `.rm` v6 byte buffers, in order.
-pub fn build_pdf_from_rm_files(title: &str, pages: &[Vec<u8>]) -> Result<Vec<u8>, String> {
+///
+/// `ocr_per_page` is an optional per-page text dump from the OCR
+/// transcript. When `Some`, each non-empty entry is appended to the
+/// matching output page as an *invisible* text layer (`Tr 3`) so
+/// macOS Preview's Find / Spotlight indexing can locate words in
+/// the exported PDF. The visual ink output is unchanged. The slice
+/// length should equal `pages.len()`; callers can pad short slices
+/// with empty strings.
+pub fn build_pdf_from_rm_files(
+    title: &str,
+    pages: &[Vec<u8>],
+    ocr_per_page: Option<&[String]>,
+) -> Result<Vec<u8>, String> {
     if pages.is_empty() {
         return Err("notebook has no pages".to_string());
     }
@@ -113,16 +131,92 @@ pub fn build_pdf_from_rm_files(title: &str, pages: &[Vec<u8>]) -> Result<Vec<u8>
             .with_current_fill_alpha(0.39),
     );
 
+    // Helvetica handle for the invisible OCR text layer. Built-in
+    // (no embedded font data); skipping registration when no OCR is
+    // available keeps the empty-transcript case byte-identical to
+    // `export-v1` output.
+    let ocr_font = ocr_per_page
+        .filter(|v| v.iter().any(|s| !s.trim().is_empty()))
+        .map(|_| PdfFontHandle::Builtin(BuiltinFont::Helvetica));
+
     for (i, bytes) in pages.iter().enumerate() {
         let rm =
             RemarkableFile::read(bytes.as_slice()).map_err(|e| format!("page {i} parse: {e}"))?;
-        let ops = render_rm_to_ops(&rm, &opaque_gs, &highlighter_gs)?;
+        let page_ocr = ocr_per_page
+            .and_then(|v| v.get(i))
+            .filter(|s| !s.trim().is_empty())
+            .map(|s| s.as_str());
+        let ops = render_rm_to_ops(
+            &rm,
+            &opaque_gs,
+            &highlighter_gs,
+            page_ocr.zip(ocr_font.as_ref()),
+        )?;
         pdf_pages.push(PdfPage::new(Mm(PAGE_W_MM), Mm(PAGE_H_MM), ops));
     }
 
     Ok(doc
         .with_pages(pdf_pages)
         .save(&PdfSaveOptions::default(), &mut warnings))
+}
+
+/// Emit the PDF op sequence that places `text` as an invisible
+/// (`Tr 3`) text run at the top-left of the current A4 page, line by
+/// line. The glyphs are skipped during rasterisation but stay in the
+/// content stream — Preview's Cmd-F and Spotlight indexing both pull
+/// from there, which is the whole point of the layer.
+///
+/// We make no attempt at bbox-accurate positioning (the transcript
+/// we get from Ollama is plain text, no per-token coordinates). The
+/// cursor sits at a generous top margin and the line height is wide
+/// enough that wrapped lines won't overlap each other visually if
+/// Preview ever decides to render them. Off-page lines are still
+/// indexable by Spotlight even if they fall below the visible page —
+/// content streams are not clipped at the page boundary for
+/// text-search purposes.
+fn invisible_text_layer_ops(text: &str, font: &PdfFontHandle) -> Vec<Op> {
+    const FONT_SIZE_PT: f32 = 10.0;
+    // Sit the cursor well inside the page so a Preview-style search
+    // highlight (a tinted rectangle around the matched text) lands
+    // somewhere visible rather than flush against the page edge.
+    const X_PT: f32 = 24.0;
+    const Y_PT: f32 = 768.0; // ~A4 height minus a top margin
+    const LINE_HEIGHT_PT: f32 = 12.0;
+
+    let mut ops = Vec::with_capacity(8 + text.lines().count() * 2);
+    ops.push(Op::StartTextSection);
+    ops.push(Op::SetFont {
+        font: font.clone(),
+        size: Pt(FONT_SIZE_PT),
+    });
+    ops.push(Op::SetTextRenderingMode {
+        mode: TextRenderingMode::Invisible,
+    });
+    ops.push(Op::SetLineHeight {
+        lh: Pt(LINE_HEIGHT_PT),
+    });
+    ops.push(Op::SetTextCursor {
+        pos: Point {
+            x: Pt(X_PT),
+            y: Pt(Y_PT),
+        },
+    });
+    let mut first = true;
+    for line in text.lines() {
+        if !first {
+            ops.push(Op::AddLineBreak);
+        }
+        first = false;
+        let trimmed = line.trim_end();
+        if trimmed.is_empty() {
+            continue;
+        }
+        ops.push(Op::ShowText {
+            items: vec![PdfTextItem::Text(trimmed.to_string())],
+        });
+    }
+    ops.push(Op::EndTextSection);
+    ops
 }
 
 /// Collect the renderable items from a parsed v6 file.
@@ -210,10 +304,19 @@ fn collect_v6_renderables(blocks: &[Block]) -> (Vec<&Line>, Vec<&Text>) {
     (lines, texts)
 }
 
+/// Render a single `.rm` page to a PDF op stream.
+///
+/// `ocr` is `(transcript_text, font)` for the invisible search-text
+/// layer. The text is split on newlines and each resulting line is
+/// paired positionally with a stroke-cluster on the page; if either
+/// side has more entries than the other we pair the prefix and spill
+/// the tail. Passing `None` produces the legacy `export-v1` output
+/// (and that's what the Preview path always does).
 fn render_rm_to_ops(
     rm: &RemarkableFile,
     opaque_gs: &ExtendedGraphicsStateId,
     highlighter_gs: &ExtendedGraphicsStateId,
+    ocr: Option<(&str, &PdfFontHandle)>,
 ) -> Result<Vec<Op>, String> {
     let (lines, texts) = match rm {
         RemarkableFile::V6 { blocks, .. } => collect_v6_renderables(blocks),
@@ -506,7 +609,261 @@ fn render_rm_to_ops(
         ops.push(Op::EndTextSection);
     }
 
+    // Invisible OCR text layer, placed per visual line. We cluster
+    // pen strokes by y-coordinate into "lines" of handwriting, pair
+    // each cluster (in top-to-bottom order) with one line of the
+    // transcript text, and emit a `Tr 3` text block at the cluster's
+    // mapped PDF bbox. Result: Preview's Cmd-F highlight rectangle
+    // lands on the matching patch of ink rather than at the page
+    // corner.
+    //
+    // Mismatch handling: if the transcript has fewer lines than the
+    // stroke clustering produced, the trailing clusters get no
+    // text (still visually rendered as ink). If the transcript has
+    // more lines than clusters, the overflow is joined onto the
+    // last cluster so every word stays searchable. This is the
+    // "good enough" path that gets us per-line highlights without
+    // needing word-level bboxes from the OCR — see `EXPORT_LAYOUT_VERSION`
+    // history for why we landed here.
+    if let Some((ocr_text, font)) = ocr {
+        let mut text_lines: Vec<String> = ocr_text
+            .split('\n')
+            .map(|l| l.trim().to_string())
+            .filter(|l| !l.is_empty())
+            .collect();
+        if !text_lines.is_empty() {
+            let clusters = cluster_strokes_into_lines(&lines);
+            if !clusters.is_empty() {
+                // Spill overflow text onto the last cluster so we
+                // don't drop searchable content on the floor.
+                if text_lines.len() > clusters.len() {
+                    let tail = text_lines.split_off(clusters.len());
+                    if let Some(last) = text_lines.last_mut() {
+                        last.push(' ');
+                        last.push_str(&tail.join(" "));
+                    }
+                }
+                for (line_text, cluster) in text_lines.iter().zip(clusters.iter()) {
+                    let top_left = map_xy(cluster.x_min, cluster.y_min);
+                    let bottom_right = map_xy(cluster.x_max, cluster.y_max);
+                    // PDF y axis points up: `map_xy` flips so smaller
+                    // .rm y → larger PDF y. The cluster's *bottom* (in
+                    // PDF space) is the lower of the two mapped y
+                    // values; that's where the text baseline sits so
+                    // Preview's highlight rectangle hugs the ink.
+                    let baseline_y = top_left.y.0.min(bottom_right.y.0);
+                    let cluster_h_pt = (top_left.y.0 - bottom_right.y.0).abs();
+                    // Cap the font height: too small → highlight is
+                    // a thin sliver hard to see; too large → it
+                    // extends past the cluster vertically. The clamp
+                    // keeps the highlight tracking ink height for
+                    // normal handwriting (~8–18 pt) and stops
+                    // pathological clusters (a full-page stroke)
+                    // from blowing up the search highlight.
+                    let font_size_pt = cluster_h_pt.clamp(8.0, 18.0);
+                    ops.push(Op::StartTextSection);
+                    ops.push(Op::SetFont {
+                        font: font.clone(),
+                        size: Pt(font_size_pt),
+                    });
+                    ops.push(Op::SetTextRenderingMode {
+                        mode: TextRenderingMode::Invisible,
+                    });
+                    ops.push(Op::SetTextCursor {
+                        pos: Point {
+                            x: top_left.x,
+                            y: Pt(baseline_y),
+                        },
+                    });
+                    ops.push(Op::ShowText {
+                        items: vec![PdfTextItem::Text(line_text.clone())],
+                    });
+                    ops.push(Op::EndTextSection);
+                }
+            }
+        }
+    }
+
     Ok(ops)
+}
+
+/// One visual line of handwriting, expressed as a bounding box in
+/// the page's native `.rm` coordinate system. Produced by
+/// [`cluster_strokes_into_lines`] for the invisible OCR text layer.
+#[derive(Clone, Copy, Debug)]
+struct StrokeLineCluster {
+    x_min: f32,
+    x_max: f32,
+    y_min: f32,
+    y_max: f32,
+}
+
+/// Group pen strokes into visual lines by y-coordinate proximity.
+/// Returns clusters sorted top-to-bottom so a caller can pair them
+/// positionally with transcript text lines.
+///
+/// Splits into two halves so the inner clustering algorithm can be
+/// unit-tested without constructing synthetic `Line` instances
+/// (`rm_parser::Line`'s fields are private; only the parser can
+/// produce one). Bbox computation lives in this outer fn;
+/// [`cluster_y_bboxes`] takes the pre-computed bboxes and does the
+/// actual grouping.
+fn cluster_strokes_into_lines(lines: &[&Line]) -> Vec<StrokeLineCluster> {
+    let bboxes: Vec<StrokeLineCluster> = lines
+        .iter()
+        .filter_map(|line| {
+            if !is_visible_tool(line.tool()) {
+                return None;
+            }
+            // Highlighters span underlines across an entire visual
+            // line, so including them in the clustering would merge
+            // separate text lines into one wide cluster. Skip them
+            // for the line-detection pass; they still render as ink.
+            if matches!(line.tool(), Tool::Highlighter) {
+                return None;
+            }
+            let pts = line.points();
+            if pts.is_empty() {
+                return None;
+            }
+            let mut x_min = f32::INFINITY;
+            let mut x_max = f32::NEG_INFINITY;
+            let mut y_min = f32::INFINITY;
+            let mut y_max = f32::NEG_INFINITY;
+            for p in pts {
+                x_min = x_min.min(p.x());
+                x_max = x_max.max(p.x());
+                y_min = y_min.min(p.y());
+                y_max = y_max.max(p.y());
+            }
+            Some(StrokeLineCluster {
+                x_min,
+                x_max,
+                y_min,
+                y_max,
+            })
+        })
+        .collect();
+    cluster_y_bboxes(bboxes)
+}
+
+/// Greedy y-axis clustering. Sort the bboxes by y-centre, then walk
+/// the sorted list extending the current cluster while the next
+/// bbox's `y_min` lies within `gap` of the cluster's `y_max`.
+/// `gap` is 60 % of the median stroke height — adaptive to the
+/// user's handwriting size, while still permissive enough that a
+/// stroke whose y range *overlaps* the cluster always joins it.
+///
+/// Clamps the median to 10 device-px so a notebook full of dots or
+/// single-pixel strokes doesn't collapse the gap to zero and shatter
+/// every glyph into its own "line".
+fn cluster_y_bboxes(mut bboxes: Vec<StrokeLineCluster>) -> Vec<StrokeLineCluster> {
+    if bboxes.is_empty() {
+        return Vec::new();
+    }
+    bboxes.sort_by(|a, b| {
+        let ac = (a.y_min + a.y_max) * 0.5;
+        let bc = (b.y_min + b.y_max) * 0.5;
+        ac.partial_cmp(&bc).unwrap_or(std::cmp::Ordering::Equal)
+    });
+    let mut heights: Vec<f32> = bboxes.iter().map(|b| b.y_max - b.y_min).collect();
+    heights.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let median_h = heights[heights.len() / 2].max(10.0);
+    let gap = median_h * 0.6;
+
+    let mut clusters: Vec<StrokeLineCluster> = Vec::new();
+    for s in bboxes {
+        if let Some(cur) = clusters.last_mut() {
+            if s.y_min <= cur.y_max + gap {
+                cur.x_min = cur.x_min.min(s.x_min);
+                cur.x_max = cur.x_max.max(s.x_max);
+                cur.y_min = cur.y_min.min(s.y_min);
+                cur.y_max = cur.y_max.max(s.y_max);
+                continue;
+            }
+        }
+        clusters.push(s);
+    }
+    clusters
+}
+
+#[cfg(test)]
+mod cluster_tests {
+    use super::{cluster_y_bboxes, StrokeLineCluster};
+
+    fn bb(y_min: f32, y_max: f32) -> StrokeLineCluster {
+        StrokeLineCluster {
+            x_min: 0.0,
+            x_max: 100.0,
+            y_min,
+            y_max,
+        }
+    }
+
+    #[test]
+    fn three_well_separated_lines_become_three_clusters() {
+        // Median stroke height is 20 px → gap threshold = 12 px. The
+        // three rows below are separated by 80 px gaps, far above
+        // threshold, so each becomes its own cluster.
+        let bboxes = vec![
+            bb(0.0, 20.0),
+            bb(5.0, 25.0),
+            bb(100.0, 120.0),
+            bb(105.0, 125.0),
+            bb(200.0, 220.0),
+        ];
+        let clusters = cluster_y_bboxes(bboxes);
+        assert_eq!(clusters.len(), 3);
+        // Returned top-to-bottom (sorted by y-centre).
+        assert!(clusters[0].y_min < clusters[1].y_min);
+        assert!(clusters[1].y_min < clusters[2].y_min);
+    }
+
+    #[test]
+    fn overlapping_strokes_merge_into_one_cluster() {
+        // Two strokes whose y-ranges overlap heavily must end up in
+        // the same cluster — e.g. a dotted "i" or a stroke that
+        // crosses a previous one.
+        let bboxes = vec![bb(0.0, 30.0), bb(5.0, 28.0), bb(2.0, 32.0)];
+        let clusters = cluster_y_bboxes(bboxes);
+        assert_eq!(clusters.len(), 1);
+        assert_eq!(clusters[0].y_min, 0.0);
+        assert_eq!(clusters[0].y_max, 32.0);
+    }
+
+    #[test]
+    fn returns_clusters_sorted_top_to_bottom() {
+        // Input deliberately out of order — caller relies on the
+        // top-to-bottom ordering to pair clusters with transcript
+        // lines positionally.
+        let bboxes = vec![bb(200.0, 220.0), bb(0.0, 20.0), bb(100.0, 120.0)];
+        let clusters = cluster_y_bboxes(bboxes);
+        assert_eq!(clusters.len(), 3);
+        assert!(clusters[0].y_min < clusters[1].y_min);
+        assert!(clusters[1].y_min < clusters[2].y_min);
+    }
+
+    #[test]
+    fn empty_input_returns_empty_output() {
+        assert!(cluster_y_bboxes(vec![]).is_empty());
+    }
+
+    #[test]
+    fn cluster_x_extent_is_the_union_of_member_strokes() {
+        // The x-extent matters for where the invisible text cursor
+        // lands — Preview's Cmd-F highlight tracks the text start x.
+        // A cluster must report the leftmost stroke's x_min.
+        let mut a = bb(0.0, 20.0);
+        a.x_min = 50.0;
+        a.x_max = 100.0;
+        let mut b = bb(2.0, 22.0);
+        b.x_min = 10.0;
+        b.x_max = 80.0;
+        let clusters = cluster_y_bboxes(vec![a, b]);
+        assert_eq!(clusters.len(), 1);
+        assert_eq!(clusters[0].x_min, 10.0);
+        assert_eq!(clusters[0].x_max, 100.0);
+    }
 }
 
 /// Emit one stroked polyline at a single width.
@@ -703,7 +1060,14 @@ fn pen_color_rgb(color: &PenColor) -> (f32, f32, f32) {
 /// Build a multi-page PDF from PNG byte buffers. Used as a fallback when
 /// a notebook has no parseable `.rm` ink files. Pages are A4 portrait;
 /// thumbnails are scaled to fit while preserving aspect ratio.
-pub fn build_pdf_from_pngs(title: &str, pages: &[Vec<u8>]) -> Result<Vec<u8>, String> {
+///
+/// `ocr_per_page` is the same opt-in invisible-text-layer source the
+/// `.rm` renderer uses — see [`build_pdf_from_rm_files`].
+pub fn build_pdf_from_pngs(
+    title: &str,
+    pages: &[Vec<u8>],
+    ocr_per_page: Option<&[String]>,
+) -> Result<Vec<u8>, String> {
     if pages.is_empty() {
         return Err("notebook has no thumbnail pages to render".to_string());
     }
@@ -711,6 +1075,9 @@ pub fn build_pdf_from_pngs(title: &str, pages: &[Vec<u8>]) -> Result<Vec<u8>, St
     let mut doc = PdfDocument::new(title);
     let mut warnings = Vec::new();
     let mut pdf_pages = Vec::with_capacity(pages.len());
+    let ocr_font = ocr_per_page
+        .filter(|v| v.iter().any(|s| !s.trim().is_empty()))
+        .map(|_| PdfFontHandle::Builtin(BuiltinFont::Helvetica));
 
     let page_w_in = PAGE_W_MM / MM_PER_INCH;
     let page_h_in = PAGE_H_MM / MM_PER_INCH;
@@ -739,21 +1106,25 @@ pub fn build_pdf_from_pngs(title: &str, pages: &[Vec<u8>]) -> Result<Vec<u8>, St
         let translate_x_pt = (page_w_pt - drawn_w_pt) / 2.0;
         let translate_y_pt = (page_h_pt - drawn_h_pt) / 2.0;
 
-        let page = PdfPage::new(
-            Mm(PAGE_W_MM),
-            Mm(PAGE_H_MM),
-            vec![Op::UseXobject {
-                id: xobject_id,
-                transform: XObjectTransform {
-                    translate_x: Some(Pt(translate_x_pt)),
-                    translate_y: Some(Pt(translate_y_pt)),
-                    scale_x: None,
-                    scale_y: None,
-                    rotate: None,
-                    dpi: Some(dpi),
-                },
-            }],
-        );
+        let mut ops = vec![Op::UseXobject {
+            id: xobject_id,
+            transform: XObjectTransform {
+                translate_x: Some(Pt(translate_x_pt)),
+                translate_y: Some(Pt(translate_y_pt)),
+                scale_x: None,
+                scale_y: None,
+                rotate: None,
+                dpi: Some(dpi),
+            },
+        }];
+        if let (Some(font), Some(ocr)) = (ocr_font.as_ref(), ocr_per_page) {
+            if let Some(text) = ocr.get(i) {
+                if !text.trim().is_empty() {
+                    ops.extend(invisible_text_layer_ops(text, font));
+                }
+            }
+        }
+        let page = PdfPage::new(Mm(PAGE_W_MM), Mm(PAGE_H_MM), ops);
         pdf_pages.push(page);
     }
 

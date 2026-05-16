@@ -89,12 +89,32 @@ export const ipc = {
     invoke<void>("purge_archived_document", { documentId }),
   openDocument: (documentId: string) =>
     invoke<string>("open_document", { documentId }),
-  /// Stage a document for OS-level drag-out. Returns the staged file
-  /// path (which Finder will land as `<visible_name>.<ext>`) and a
-  /// drag-preview icon path the drag plugin requires. Idempotent and
-  /// content-keyed — calling it on hover to warm the cache is safe.
+  /// Warm the OS-drag staging cache for a document so a subsequent
+  /// `startExportDrag` returns instantly. Idempotent and
+  /// content-keyed: a cache hit skips the blob read / render entirely.
+  /// JS treats the returned paths as opaque — the actual drag is
+  /// started by `startExportDrag`, which never returns a path so a
+  /// compromised renderer can't substitute one.
   prepareExportPdf: (documentId: string) =>
     invoke<ExportDragPaths>("prepare_export_pdf", { documentId }),
+  /// Begin a native OS drag-out for the given document. The backend
+  /// stages the file under the export cache (re-using the prefetch
+  /// cache when warm) and hands the staged path to the platform
+  /// drag-source layer. The renderer never sees the path — the
+  /// security model is "JS supplies a document_id, the backend
+  /// decides which file leaves the sandbox." macOS-only; other
+  /// platforms return an error so the UI's ⌥-drag affordance has a
+  /// belt-and-braces backstop on top of the client-side platform gate.
+  startExportDrag: (documentId: string) =>
+    invoke<void>("start_export_drag", { documentId }),
+  /// Right-click "Export PDF…" path: stage the document and copy
+  /// it into a folder the user picks via the system dialog.
+  /// Returns the absolute path that was written, or `null` if the
+  /// user cancelled the folder picker. Works on every platform
+  /// (no native-drag dependency); this is the canonical export
+  /// path on Windows/Linux.
+  exportDocumentPdf: (documentId: string) =>
+    invoke<string | null>("export_document_pdf", { documentId }),
   documentThumbnail: (documentId: string) =>
     invoke<string | null>("document_thumbnail", { documentId }),
   getHistory: (documentId: string) =>

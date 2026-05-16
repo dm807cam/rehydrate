@@ -31,7 +31,7 @@ fn minimal_v6_page() -> Vec<u8> {
 #[test]
 fn renders_minimal_v6_notebook_without_parse_error() {
     let page = minimal_v6_page();
-    let pdf = build_pdf_from_rm_files("regression-fixture", &[page])
+    let pdf = build_pdf_from_rm_files("regression-fixture", &[page], None)
         .expect("minimal v6 notebook must render — see file doc");
     // PDF files begin with `%PDF-` — confirm we produced something
     // that at least passes the file-magic check rather than a
@@ -51,7 +51,7 @@ fn renders_multi_page_v6_notebook() {
     // notebooks failed during the regression (one bad parse = the
     // whole call errors and the cached fallback wins).
     let pages = vec![minimal_v6_page(), minimal_v6_page(), minimal_v6_page()];
-    let pdf = build_pdf_from_rm_files("multi", &pages)
+    let pdf = build_pdf_from_rm_files("multi", &pages, None)
         .expect("three-page header-only notebook must render");
     assert!(pdf.starts_with(b"%PDF-"));
 }
@@ -62,6 +62,6 @@ fn empty_pages_slice_is_typed_error_not_panic() {
     // slice is empty. Locking this so a future refactor doesn't
     // change the shape of the empty-input failure (the commands
     // layer matches on `Err(_)` and falls back to thumbnails).
-    let r = build_pdf_from_rm_files("nope", &[]);
+    let r = build_pdf_from_rm_files("nope", &[], None);
     assert!(r.is_err(), "empty pages slice should error, got Ok");
 }
