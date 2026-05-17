@@ -15,6 +15,13 @@ library on-disk format is forward-stable from `0.9.0`.
   first connection to the tablet at `10.11.99.1` instead of
   blocking the SSH socket silently. Affects macOS 15+ users
   (rM2 and Paper Pro alike) (#60).
+- **App (keychain)**: "Remember password" now actually persists the
+  reMarkable SSH password across app restarts on macOS. The `keyring`
+  v3 dependency was missing its `apple-native` backend feature, so the
+  crate was silently compiling to an in-memory mock store: writes
+  returned `Ok(())`, in-session reads worked, and the password
+  disappeared on next launch with no warning surfaced. Enabling the
+  feature routes credential I/O to the real macOS Keychain (#58).
 
 ## [1.0.1] — 2026-05-15
 

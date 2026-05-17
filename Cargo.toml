@@ -31,7 +31,7 @@ async-trait = "0.1"
 directories = "6"
 futures = "0.3"
 hex = "0.4"
-keyring = "3"
+keyring = { version = "3", features = ["apple-native"] }
 russh = "0.60"
 russh-sftp = "2"
 secrecy = { version = "0.10", features = ["serde"] }

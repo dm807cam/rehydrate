@@ -142,17 +142,20 @@ drawer — there is no background-publish.
 
 - The SSH password the tablet shows under *Settings → Help → Copyrights and
   licenses → "GPLv3 Compliance"* is stored in the OS keyring via the
-  `keyring` crate.
-  - macOS: Keychain (Login)
-  - Windows: Credential Manager
-  - Linux: `secret-service` (typically `gnome-keyring`)
+  `keyring` crate. Shipped binaries are macOS Apple-Silicon only and
+  use the system Keychain (Login). Source builds on other platforms
+  fall back to keyring's in-memory mock store unless the workspace is
+  rebuilt with the corresponding backend feature (`linux-native` /
+  `sync-secret-service` for Linux, `windows-native` for Windows);
+  those configurations are not part of CI and are not security-
+  reviewed.
 - The password is held in memory as `secrecy::SecretString`, which
   zero-fills on drop. The only places it's materialised as a `String`
   are the keyring write (`set_password`) and the russh `authenticate_password`
   call; both are scoped to the connect path.
-- On Linux without `secret-service`, the keyring write fails and the
-  app surfaces a `keyring:warning` toast — the password is **not**
-  silently written to plaintext.
+- If `keyring::Entry::new` or `set_password` returns an error (e.g.
+  Keychain access denied), the app surfaces a `keyring:warning` toast
+  — the password is **not** silently written to plaintext.
 - `forget_device_password` deletes the keyring entry.
 
 ## Untrusted device data
