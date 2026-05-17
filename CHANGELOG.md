@@ -8,20 +8,51 @@ library on-disk format is forward-stable from `0.9.0`.
 
 ## [Unreleased]
 
+## [1.0.2] — 2026-05-17
+
+Patch release on the v1.0 line. Fixes first-run macOS networking,
+real Keychain persistence, and the new drag-out export path. No
+on-disk format changes. The macOS bundle is still Apple-Silicon-only,
+still unsigned, and still requires the right-click → Open dance on
+first launch.
+
+### Added
+
+- **Export**: hold Option while dragging a document row or tile to
+  drag a real file out of reHydrate into Finder, Desktop, Mail, or
+  another native drop target. PDF and EPUB documents are copied out
+  verbatim; notebooks render to a multi-page PDF via the same ink
+  renderer used by Preview (#57).
+
 ### Fixed
 
 - **macOS bundle**: ship `NSLocalNetworkUsageDescription` in
   `Info.plist`, so the OS prompts for Local Network access on
   first connection to the tablet at `10.11.99.1` instead of
   blocking the SSH socket silently. Affects macOS 15+ users
-  (rM2 and Paper Pro alike) (#60).
+  (rM2 and Paper Pro alike) (#60, #61).
 - **App (keychain)**: "Remember password" now actually persists the
   reMarkable SSH password across app restarts on macOS. The `keyring`
   v3 dependency was missing its `apple-native` backend feature, so the
   crate was silently compiling to an in-memory mock store: writes
   returned `Ok(())`, in-session reads worked, and the password
   disappeared on next launch with no warning surfaced. Enabling the
-  feature routes credential I/O to the real macOS Keychain (#58).
+  feature routes credential I/O to the real macOS Keychain (#58, #59).
+- **Export cache**: drag-out export staging now checks the content-
+  keyed cache path before reading large PDF/EPUB blobs or rendering
+  notebooks. Hover prefetch therefore stays cheap on cache hits, and
+  the actual Option-drag can call into macOS' drag API inside the
+  short user-gesture window.
+
+### Credits
+
+- Thanks to
+  [u/shuusaku](https://www.reddit.com/r/RemarkableTablet/comments/1tccfh3/comment/om7ez6o/)
+  for the Paper Pro report and follow-up root-cause notes that led
+  directly to the macOS Local Network permission fix and the Keychain
+  backend fix.
+
+[1.0.2]: https://github.com/dm807cam/rehydrate/releases/tag/v1.0.2
 
 ## [1.0.1] — 2026-05-15
 
