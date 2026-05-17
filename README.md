@@ -11,7 +11,7 @@ The library lives in a single self-contained directory you control: every distin
 
 ## Status
 
-`v1.0.1` — patch release on the v1.0 line. macOS (Apple Silicon) only. Bundles
+`v1.0.2` — patch release on the v1.0 line. macOS (Apple Silicon) only. Bundles
 ship **unsigned**; see [Installing](#installing) below for the
 Gatekeeper right-click dance on first launch. Working features:
 

@@ -816,6 +816,11 @@ pub async fn prepare_export_pdf(
 ) -> Result<ExportDragPaths, String> {
     use rehydrate_core::Manifest;
 
+    enum ExportSource {
+        Body { sha256: rehydrate_core::Sha256Hex },
+        Notebook,
+    }
+
     let lib = lib_arc(&state).await?;
     let docs = lib.list_documents().map_err(err)?;
     let doc = docs
@@ -832,13 +837,11 @@ pub async fn prepare_export_pdf(
 
     let safe_name = sanitize(&doc.visible_name);
 
-    // Resolve the body. PDF/EPUB documents are copied verbatim;
-    // notebooks render through `rehydrate_render`. Path mirrors
-    // `open_document` so the body-type detection stays in lockstep
-    // (a future format addition only has to be added in one place,
-    // since I'd want both `open_document` and `prepare_export_pdf`
-    // to learn about it together).
-    let (ext, key, source_bytes) = if let Some(body) = manifest
+    // Resolve enough metadata to compute the staging path first. On a
+    // hot cache hit this returns without re-reading a large PDF/EPUB
+    // blob or re-rendering a notebook, which is what keeps the
+    // hover-prefetch path useful for macOS' short drag gesture window.
+    let (ext, key, source) = if let Some(body) = manifest
         .files
         .iter()
         .find(|f| f.path.ends_with(".pdf") || f.path.ends_with(".epub"))
@@ -852,8 +855,9 @@ pub async fn prepare_export_pdf(
         } else {
             "epub"
         };
-        let bytes = lib.read_blob(&body.sha256).map_err(err)?;
-        (ext, body.sha256.as_str().to_string(), bytes)
+        let key = body.sha256.as_str().to_string();
+        let sha256 = body.sha256.clone();
+        (ext, key, ExportSource::Body { sha256 })
     } else {
         // Notebook. The cache key combines manifest hash (covers all
         // ink + typed-text + transcript state via Manifest's content
@@ -866,60 +870,7 @@ pub async fn prepare_export_pdf(
             doc.current_manifest.as_str(),
             rehydrate_render::EXPORT_LAYOUT_VERSION,
         );
-        // Build the PDF on a worker thread — parsing 100s of pages
-        // of `.rm` and stroking each one would otherwise block the
-        // tokio runtime for several seconds on a cold render. The
-        // hover prefetch is what keeps the actual dragstart cheap;
-        // this branch only does real work the first time per
-        // (document, manifest, layout-version) tuple.
-        let render_doc_id = doc.document_id.clone();
-        let render_visible_name = doc.visible_name.clone();
-        let render_manifest = manifest.clone();
-        let render_lib = Arc::clone(&lib);
-        let app_for_warn = app.clone();
-        let bytes = tauri::async_runtime::spawn_blocking(move || -> Result<Vec<u8>, String> {
-            let mut rm_pages: Vec<_> = render_manifest
-                .files
-                .iter()
-                .filter(|f| {
-                    f.path.ends_with(".rm")
-                        && !f.path.contains(".thumbnails")
-                        && !f.path.ends_with(".local")
-                })
-                .collect();
-            rm_pages.sort_by(|a, b| a.path.cmp(&b.path));
-            if !rm_pages.is_empty() {
-                let mut bufs = Vec::with_capacity(rm_pages.len());
-                for f in &rm_pages {
-                    bufs.push(render_lib.read_blob(&f.sha256).map_err(err)?);
-                }
-                match rehydrate_render::build_pdf_from_rm_files(&render_visible_name, &bufs) {
-                    Ok(b) => Ok(b),
-                    Err(e) => {
-                        // Same legacy-format warning open_document
-                        // emits — keep the user-visible signal
-                        // consistent across the two entry points.
-                        tracing::warn!(
-                            "export rendering failed for {render_doc_id}: {e}; falling back to thumbnails"
-                        );
-                        let _ = app_for_warn.emit(
-                            "document:legacy-format-warning",
-                            format!(
-                                "\"{render_visible_name}\" uses an older notebook format. The export falls \
-                                 back to lower-resolution thumbnails. Sync the tablet to upgrade the \
-                                 notebook to the current format.",
-                            ),
-                        );
-                        thumbnail_fallback_pdf(&render_lib, &render_manifest, &render_visible_name)
-                    }
-                }
-            } else {
-                thumbnail_fallback_pdf(&render_lib, &render_manifest, &render_visible_name)
-            }
-        })
-        .await
-        .map_err(err)??;
-        ("pdf", key, bytes)
+        ("pdf", key, ExportSource::Notebook)
     };
 
     // Per-document staging dir: the filename inside is the clean
@@ -929,7 +880,72 @@ pub async fn prepare_export_pdf(
     // from a different document or manifest).
     let staging_dir = export_root.join(format!("{document_id}-{key}"));
     let staging_path = staging_dir.join(format!("{safe_name}.{ext}"));
+
     if !staging_path.exists() {
+        let source_bytes = match source {
+            ExportSource::Body { sha256 } => lib.read_blob(&sha256).map_err(err)?,
+            ExportSource::Notebook => {
+                // Build the PDF on a worker thread — parsing 100s of pages
+                // of `.rm` and stroking each one would otherwise block the
+                // tokio runtime for several seconds on a cold render. The
+                // hover prefetch is what keeps the actual dragstart cheap;
+                // this branch only does real work the first time per
+                // (document, manifest, layout-version) tuple.
+                let render_doc_id = doc.document_id.clone();
+                let render_visible_name = doc.visible_name.clone();
+                let render_manifest = manifest.clone();
+                let render_lib = Arc::clone(&lib);
+                let app_for_warn = app.clone();
+                tauri::async_runtime::spawn_blocking(move || -> Result<Vec<u8>, String> {
+                    let mut rm_pages: Vec<_> = render_manifest
+                        .files
+                        .iter()
+                        .filter(|f| {
+                            f.path.ends_with(".rm")
+                                && !f.path.contains(".thumbnails")
+                                && !f.path.ends_with(".local")
+                        })
+                        .collect();
+                    rm_pages.sort_by(|a, b| a.path.cmp(&b.path));
+                    if !rm_pages.is_empty() {
+                        let mut bufs = Vec::with_capacity(rm_pages.len());
+                        for f in &rm_pages {
+                            bufs.push(render_lib.read_blob(&f.sha256).map_err(err)?);
+                        }
+                        match rehydrate_render::build_pdf_from_rm_files(&render_visible_name, &bufs)
+                        {
+                            Ok(b) => Ok(b),
+                            Err(e) => {
+                                // Same legacy-format warning open_document
+                                // emits — keep the user-visible signal
+                                // consistent across the two entry points.
+                                tracing::warn!(
+                                    "export rendering failed for {render_doc_id}: {e}; falling back to thumbnails"
+                                );
+                                let _ = app_for_warn.emit(
+                                    "document:legacy-format-warning",
+                                    format!(
+                                        "\"{render_visible_name}\" uses an older notebook format. The export falls \
+                                         back to lower-resolution thumbnails. Sync the tablet to upgrade the \
+                                         notebook to the current format.",
+                                    ),
+                                );
+                                thumbnail_fallback_pdf(
+                                    &render_lib,
+                                    &render_manifest,
+                                    &render_visible_name,
+                                )
+                            }
+                        }
+                    } else {
+                        thumbnail_fallback_pdf(&render_lib, &render_manifest, &render_visible_name)
+                    }
+                })
+                .await
+                .map_err(err)??
+            }
+        };
+
         std::fs::create_dir_all(&staging_dir).map_err(err)?;
         // Write atomically: a same-dir tempfile + rename means the
         // OS never sees a partially-written staging file even if the
