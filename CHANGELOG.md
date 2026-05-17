@@ -10,6 +10,11 @@ library on-disk format is forward-stable from `0.9.0`.
 
 ### Fixed
 
+- **macOS bundle**: ship `NSLocalNetworkUsageDescription` in
+  `Info.plist`, so the OS prompts for Local Network access on
+  first connection to the tablet at `10.11.99.1` instead of
+  blocking the SSH socket silently. Affects macOS 15+ users
+  (rM2 and Paper Pro alike) (#60).
 - **App (keychain)**: "Remember password" now actually persists the
   reMarkable SSH password across app restarts on macOS. The `keyring`
   v3 dependency was missing its `apple-native` backend feature, so the
