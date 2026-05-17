@@ -64,6 +64,12 @@ v1.1. Until then, macOS warns on first launch:
    `/Applications`** and choose **Open**. Confirm the "unidentified
    developer" warning. After this one-time bypass, normal
    double-click works.
+6. The first time you connect a tablet, macOS will prompt for
+   **Local Network** access — the tablet shows up at `10.11.99.1`
+   over USB-Ethernet, and macOS classes that as local network.
+   Allow it. If you dismissed the prompt, re-enable reHydrate
+   under **System Settings → Privacy & Security → Local
+   Network**.
 
 ## Compatibility
 
