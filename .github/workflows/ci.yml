@@ -25,6 +25,18 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
+      # Guard against the `keyring` mock-store regression (#58): if the
+      # `apple-native` feature is dropped from `Cargo.toml`, the crate
+      # silently compiles to an in-memory backend and "Remember
+      # password" stops persisting across restarts — without any
+      # warning at runtime. The presence of `security-framework` in the
+      # resolved lockfile is the cheapest deterministic signal that the
+      # real Keychain backend is linked.
+      - name: Guard keyring backend (Cargo.lock has security-framework)
+        run: |
+          grep -q '^name = "security-framework"' Cargo.lock \
+            || (echo "::error::keyring backend missing — Cargo.lock has no security-framework entry. Did the apple-native feature get dropped?"; exit 1)
+
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:

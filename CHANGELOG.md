@@ -8,6 +8,16 @@ library on-disk format is forward-stable from `0.9.0`.
 
 ## [Unreleased]
 
+### Fixed
+
+- **App (keychain)**: "Remember password" now actually persists the
+  reMarkable SSH password across app restarts on macOS. The `keyring`
+  v3 dependency was missing its `apple-native` backend feature, so the
+  crate was silently compiling to an in-memory mock store: writes
+  returned `Ok(())`, in-session reads worked, and the password
+  disappeared on next launch with no warning surfaced. Enabling the
+  feature routes credential I/O to the real macOS Keychain (#58).
+
 ## [1.0.1] — 2026-05-15
 
 Patch release on the v1.0 line. Bug fixes, hardening, and dependency
