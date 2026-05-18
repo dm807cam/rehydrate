@@ -21,6 +21,13 @@ library on-disk format is forward-stable from `0.9.0`.
   case-insensitive substring fallback, and the optional-directory
   probe in `fetch_document_tree` routes through the same classifier
   so the two sites can't drift again (#63).
+- **Sync (rMPP)**: the sibling probe for the optional
+  `xochitl/<uuid>.thumbnails` directory used to swallow *every*
+  error — a transient SFTP failure would silently drop the
+  thumbnails subtree and the document was still recorded as a
+  successful sync. It now routes through the same classifier as
+  the `xochitl/<uuid>/` probe: `NotFound` is benign, anything else
+  propagates.
 
 ### Credits
 

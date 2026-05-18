@@ -1007,10 +1007,22 @@ impl Device for SshDevice {
         }
 
         // 3. Optional thumbnails directory: <xochitl>/<uuid>.thumbnails
+        // Same shape as #2: NotFound is benign (not every document
+        // has thumbnails) but any other error must propagate. The
+        // previous `if let Ok(_)` swallowed every error indiscriminately,
+        // so a transient SFTP failure here would silently drop the
+        // thumbnails subtree and the document would still be recorded
+        // as a successful sync.
         let thumb = format!("{dir}/{uuid}.thumbnails");
-        if let Ok(_dir_entries) = inner.sftp.read_dir(&thumb).await {
-            fetch_subtree_named(&inner.sftp, &thumb, &format!("{uuid}.thumbnails"), &mut out)
-                .await?;
+        match inner.sftp.read_dir(&thumb).await {
+            Ok(_) => {
+                fetch_subtree_named(&inner.sftp, &thumb, &format!("{uuid}.thumbnails"), &mut out)
+                    .await?;
+            }
+            Err(e) => match sftp_err("read_dir", &thumb, e) {
+                DeviceError::NotFound(_) => {}
+                other => return Err(other),
+            },
         }
 
         out.sort_by(|a, b| a.path.cmp(&b.path));
