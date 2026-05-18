@@ -71,6 +71,22 @@ jobs:
           # ancestor` would fail with "not a tree" on `origin/main`.
           fetch-depth: 0
 
+      # Same disk-space hygiene as ci.yml: self-hosted runners
+      # accumulate `target/` across runs and eventually wedge cargo
+      # with "No space left on device". Prune if below headroom.
+      - name: Reclaim runner disk space if low
+        run: |
+          set -euo pipefail
+          df -h .
+          free_kb=$(df -k . | awk 'NR==2 {print $4}')
+          free_gb=$(( free_kb / 1024 / 1024 ))
+          if (( free_gb < 20 )) && [[ -d target ]]; then
+            size=$(du -sh target | awk '{print $1}')
+            echo "::warning::Low disk space (${free_gb} GB free) — removing ./target (${size})"
+            rm -rf target
+            df -h .
+          fi
+
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
@@ -249,6 +265,22 @@ jobs:
     runs-on: [self-hosted, macOS, ARM64]
     steps:
       - uses: actions/checkout@v6
+
+      # Same disk-space hygiene as ci.yml: self-hosted runners
+      # accumulate `target/` across runs and eventually wedge cargo
+      # with "No space left on device". Prune if below headroom.
+      - name: Reclaim runner disk space if low
+        run: |
+          set -euo pipefail
+          df -h .
+          free_kb=$(df -k . | awk 'NR==2 {print $4}')
+          free_gb=$(( free_kb / 1024 / 1024 ))
+          if (( free_gb < 20 )) && [[ -d target ]]; then
+            size=$(du -sh target | awk '{print $1}')
+            echo "::warning::Low disk space (${free_gb} GB free) — removing ./target (${size})"
+            rm -rf target
+            df -h .
+          fi
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable

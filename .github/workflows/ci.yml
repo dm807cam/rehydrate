@@ -25,6 +25,27 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
+      # Self-hosted runners accumulate workspace state across runs.
+      # The `target/` tree from this workspace is multi-GB and
+      # eventually fills the runner disk, at which point `cargo build`
+      # dies mid-link with "No space left on device" (os error 28).
+      # Report free space and prune the workspace `target/` if we're
+      # below a conservative headroom — keeps incremental compilation
+      # warm in the common case while preventing the runner from
+      # getting wedged.
+      - name: Reclaim runner disk space if low
+        run: |
+          set -euo pipefail
+          df -h .
+          free_kb=$(df -k . | awk 'NR==2 {print $4}')
+          free_gb=$(( free_kb / 1024 / 1024 ))
+          if (( free_gb < 20 )) && [[ -d target ]]; then
+            size=$(du -sh target | awk '{print $1}')
+            echo "::warning::Low disk space (${free_gb} GB free) — removing ./target (${size})"
+            rm -rf target
+            df -h .
+          fi
+
       # Guard against the `keyring` mock-store regression (#58): if the
       # `apple-native` feature is dropped from `Cargo.toml`, the crate
       # silently compiles to an in-memory backend and "Remember
