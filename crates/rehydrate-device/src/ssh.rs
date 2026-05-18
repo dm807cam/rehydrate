@@ -569,8 +569,22 @@ async fn open_sftp(handle: &Handle<ClientHandler>) -> DeviceResult<SftpSession> 
 }
 
 fn sftp_err(op: &str, path: &str, e: russh_sftp::client::error::Error) -> DeviceError {
+    // Prefer the typed status from russh-sftp so we don't depend on the
+    // wording of the rendered error string. The reMarkable Paper Pro's
+    // SFTP server returns Display "No such file" (with a space, mixed
+    // case) — the older substring check looked for "NoSuchFile" (the
+    // Debug spelling) and missed it, demoting a missing optional
+    // directory to DeviceError::Other and skipping the whole document.
+    use russh_sftp::client::error::Error as SftpError;
+    use russh_sftp::protocol::StatusCode;
+    if let SftpError::Status(s) = &e {
+        if s.status_code == StatusCode::NoSuchFile {
+            return DeviceError::NotFound(path.to_string());
+        }
+    }
     let msg = format!("{op} {path}: {e}");
-    if msg.contains("NoSuchFile") || msg.contains("ENOENT") {
+    let lower = msg.to_ascii_lowercase();
+    if lower.contains("no such file") || lower.contains("nosuchfile") || lower.contains("enoent") {
         DeviceError::NotFound(path.to_string())
     } else {
         DeviceError::Other(msg)
@@ -976,17 +990,20 @@ impl Device for SshDevice {
         }
 
         // 2. Optional per-document directory: <xochitl>/<uuid>/...
+        // The directory is genuinely optional — some document types
+        // don't have one — so a NotFound here is benign and must not
+        // be allowed to skip the whole document. Route through
+        // sftp_err so the "what counts as not-found" rule lives in
+        // exactly one place.
         let subdir = format!("{dir}/{uuid}");
         match inner.sftp.read_dir(&subdir).await {
             Ok(_) => {
                 fetch_subtree(&inner.sftp, &subdir, uuid, &mut out).await?;
             }
-            Err(e) => {
-                let msg = e.to_string();
-                if !msg.contains("NoSuchFile") && !msg.contains("ENOENT") {
-                    return Err(sftp_err("read_dir", &subdir, e));
-                }
-            }
+            Err(e) => match sftp_err("read_dir", &subdir, e) {
+                DeviceError::NotFound(_) => {}
+                other => return Err(other),
+            },
         }
 
         // 3. Optional thumbnails directory: <xochitl>/<uuid>.thumbnails
@@ -1276,4 +1293,71 @@ pub async fn is_reachable(host: &str, port: u16) -> bool {
         .await,
         Ok(Ok(_))
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use russh_sftp::client::error::Error as SftpError;
+    use russh_sftp::protocol::{Status, StatusCode};
+
+    fn status_err(code: StatusCode, message: &str) -> SftpError {
+        SftpError::Status(Status {
+            id: 1,
+            status_code: code,
+            error_message: message.to_string(),
+            language_tag: String::new(),
+        })
+    }
+
+    // The reMarkable Paper Pro returns Status(NoSuchFile, "No such file")
+    // — without the typed match this used to be classified as Other
+    // and skip the whole document.
+    #[test]
+    fn typed_no_such_file_status_maps_to_not_found() {
+        let e = status_err(StatusCode::NoSuchFile, "No such file");
+        assert!(matches!(
+            sftp_err("read_dir", "/some/path", e),
+            DeviceError::NotFound(_)
+        ));
+    }
+
+    #[test]
+    fn legacy_camelcase_no_such_file_string_maps_to_not_found() {
+        // Construct an IO-wrapped error whose Display includes the
+        // older "NoSuchFile" spelling; the fallback substring match
+        // (lowercased) should still classify it as NotFound.
+        let e = SftpError::IO("NoSuchFile: somewhere".into());
+        assert!(matches!(
+            sftp_err("read_dir", "/some/path", e),
+            DeviceError::NotFound(_)
+        ));
+    }
+
+    #[test]
+    fn enoent_in_message_maps_to_not_found() {
+        let e = SftpError::IO("got ENOENT from kernel".into());
+        assert!(matches!(
+            sftp_err("read_dir", "/some/path", e),
+            DeviceError::NotFound(_)
+        ));
+    }
+
+    #[test]
+    fn permission_denied_status_is_not_classified_as_not_found() {
+        let e = status_err(StatusCode::PermissionDenied, "Permission denied");
+        assert!(matches!(
+            sftp_err("read_dir", "/some/path", e),
+            DeviceError::Other(_)
+        ));
+    }
+
+    #[test]
+    fn unrelated_io_error_maps_to_other() {
+        let e = SftpError::IO("connection reset".into());
+        assert!(matches!(
+            sftp_err("read_dir", "/some/path", e),
+            DeviceError::Other(_)
+        ));
+    }
 }

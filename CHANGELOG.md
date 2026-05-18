@@ -8,6 +8,27 @@ library on-disk format is forward-stable from `0.9.0`.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Sync (rMPP)**: stop skipping whole documents when the optional
+  per-document directory `xochitl/<uuid>/` is absent on the device.
+  The SFTP error classifier was matching the Debug spelling
+  `"NoSuchFile"` against an error whose Display is `"No such file"`,
+  so a benign "directory does not exist" was demoted to
+  `DeviceError::Other` and propagated up to the pull loop as a
+  document-level failure. The classifier now matches the typed
+  `russh_sftp::protocol::StatusCode::NoSuchFile` variant, with a
+  case-insensitive substring fallback, and the optional-directory
+  probe in `fetch_document_tree` routes through the same classifier
+  so the two sites can't drift again (#63).
+
+### Credits
+
+- Thanks again to
+  [u/shuusaku](https://www.reddit.com/r/RemarkableTablet/comments/1tccfh3/)
+  for spotting the rMPP "No such file" classification bug and
+  reporting it with the exact root cause.
+
 ## [1.0.2] — 2026-05-17
 
 Patch release on the v1.0 line. Fixes first-run macOS networking,
