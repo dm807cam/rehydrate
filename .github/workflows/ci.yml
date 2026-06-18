@@ -23,7 +23,7 @@ jobs:
     name: Rust + UI (macOS, Apple Silicon)
     runs-on: [self-hosted, macOS, ARM64]
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       # Self-hosted runners accumulate workspace state across runs.
       # The `target/` tree from this workspace is multi-GB and
@@ -118,7 +118,7 @@ jobs:
     # triage cost of failing fast is much cheaper than the
     # alternative of letting an advisory go unnoticed in the logs.
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
 
       - name: Install cargo-audit and cargo-deny
