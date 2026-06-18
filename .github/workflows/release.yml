@@ -63,7 +63,7 @@ jobs:
       changelog_heading: ${{ steps.changelog.outputs.heading }}
       body: ${{ steps.changelog.outputs.body }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           # The tag-reachability check below needs `origin/main`
           # available locally. The default shallow checkout only
@@ -264,7 +264,7 @@ jobs:
     needs: preflight
     runs-on: [self-hosted, macOS, ARM64]
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       # Same disk-space hygiene as ci.yml: self-hosted runners
       # accumulate `target/` across runs and eventually wedge cargo
