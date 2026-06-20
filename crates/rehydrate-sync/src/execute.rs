@@ -48,6 +48,7 @@ pub async fn execute_pull(
     cancel: Cancel,
 ) -> SyncResult<SyncReport> {
     let total = plan.items.len();
+    tracing::info!(total, "pull started");
     if let Some(p) = &progress {
         let _ = p
             .send(ProgressEvent::PlanReady {
@@ -69,6 +70,10 @@ pub async fn execute_pull(
     let mut recorded = 0usize;
     let mut unchanged = 0usize;
     let mut skipped = 0usize;
+
+    // Documents the user purged locally that still need to be removed from
+    // the tablet. Loaded once so we don't query SQLite per device entry.
+    let deletion_queue = library.list_device_deletion_queue().unwrap_or_default();
 
     for item in plan.items {
         if cancel.is_cancelled() {
@@ -101,11 +106,44 @@ pub async fn execute_pull(
             continue;
         }
 
+        // Documents the user purged locally while the tablet was unreachable.
+        // Delete them from the device now rather than re-downloading them.
+        if deletion_queue.contains(&item.entry.uuid) {
+            match device.delete_document_tree(&item.entry.uuid).await {
+                Ok(()) => {
+                    tracing::info!(
+                        uuid = %item.entry.uuid,
+                        "deleted purged document from device"
+                    );
+                }
+                Err(e) => {
+                    // Not fatal — the queue entry stays and we retry next sync.
+                    tracing::warn!(
+                        uuid = %item.entry.uuid,
+                        error = %e,
+                        "failed to delete purged document from device (will retry)"
+                    );
+                }
+            }
+            // Dequeue: on success the file is gone; on "not found" errors it
+            // was already absent. Only a transient error keeps retrying, but
+            // leaving the entry doesn't break anything — next pull redoes this.
+            let _ = library.dequeue_device_deletion(&item.entry.uuid);
+            skipped += 1;
+            continue;
+        }
+
         if matches!(item.status, PlanItemStatus::Unchanged) {
             unchanged += 1;
             continue;
         }
         if matches!(item.status, PlanItemStatus::Skipped) {
+            tracing::info!(
+                uuid = %item.entry.uuid,
+                name = %item.entry.visible_name,
+                reason = item.reason.as_deref().unwrap_or(""),
+                "pull: document skipped during planning"
+            );
             skipped += 1;
             if let Some(p) = &progress {
                 let _ = p
@@ -129,6 +167,13 @@ pub async fn execute_pull(
 
         match fetch_and_record(library, device, &item, progress.as_ref()).await {
             Ok(was_unchanged) => {
+                if !was_unchanged {
+                    tracing::info!(
+                        uuid = %item.entry.uuid,
+                        name = %item.entry.visible_name,
+                        "pulled document"
+                    );
+                }
                 if let Some(p) = &progress {
                     let _ = p
                         .send(ProgressEvent::DocumentCompleted {
@@ -144,7 +189,12 @@ pub async fn execute_pull(
                 }
             }
             Err(e) => {
-                tracing::warn!(uuid = %item.entry.uuid, error = %e, "document skipped");
+                tracing::warn!(
+                    uuid = %item.entry.uuid,
+                    name = %item.entry.visible_name,
+                    error = %e,
+                    "pull: document skipped due to fetch/record error"
+                );
                 skipped += 1;
                 if let Some(p) = &progress {
                     let _ = p
@@ -200,6 +250,10 @@ pub async fn execute_pull(
                         if device_ids.contains(&doc_id) {
                             continue;
                         }
+                        tracing::info!(
+                            uuid = %doc_id,
+                            "archiving document no longer on device"
+                        );
                         if let Err(e) = library.archive_document(&doc_id, ArchiveReason::Device) {
                             tracing::warn!(
                                 uuid = %doc_id,
@@ -225,6 +279,7 @@ pub async fn execute_pull(
             })
             .await;
     }
+    tracing::info!(recorded, unchanged, skipped, "pull complete");
     Ok(SyncReport {
         recorded,
         unchanged,

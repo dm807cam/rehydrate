@@ -9,5 +9,6 @@ description = "reHydrate notebook rendering: parse reMarkable v6 .rm files and e
 
 [dependencies]
 image = { workspace = true }
+lopdf = { workspace = true }
 printpdf = { workspace = true }
 rm-parser = { path = "../rm-parser" }

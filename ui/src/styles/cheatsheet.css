@@ -1,0 +1,18 @@
+/* =====================================================================
+ * Keyboard hint (cheatsheet shown when user hits ?)
+ * ===================================================================== */
+
+.kbd {
+  display: inline-block;
+  padding: 0 6px;
+  border: 1px solid var(--border-strong);
+  border-bottom-width: 2px;
+  border-radius: 4px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: var(--text-xs);
+  background: var(--bg-elev);
+  color: var(--text);
+  min-width: 18px;
+  text-align: center;
+}
+

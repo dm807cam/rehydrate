@@ -5,6 +5,7 @@ use tauri::Manager;
 
 mod commands;
 mod config;
+mod export;
 mod keychain;
 mod logging;
 mod ocr_commands;
@@ -47,6 +48,7 @@ pub fn run() {
             commands::auto_open_library,
             commands::switch_library,
             commands::pick_library_directory,
+            commands::pick_export_directory,
             commands::list_recent_libraries,
             commands::library_summary,
             commands::list_documents,
@@ -68,6 +70,8 @@ pub fn run() {
             commands::get_history,
             commands::set_version_note,
             commands::export_version,
+            export::export_as_pdfs,
+            export::export_selected_as_pdfs,
             commands::verify_library,
             commands::import_file,
             commands::import_dropped_file,
@@ -78,6 +82,7 @@ pub fn run() {
             commands::forget_device_host_key,
             commands::connect_device,
             commands::disconnect_device,
+            commands::purge_device_trash,
             commands::pull_plan,
             commands::pull_execute,
             commands::push_plan,

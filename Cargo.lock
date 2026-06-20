@@ -3421,6 +3421,47 @@ dependencies = [
 ]
 
 [[package]]
+name = "jiff"
+version = "0.2.24"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f00b5dbd620d61dfdcb6007c9c1f6054ebd75319f163d886a9055cec1155073d"
+dependencies = [
+ "jiff-static",
+ "jiff-tzdb-platform",
+ "log",
+ "portable-atomic",
+ "portable-atomic-util",
+ "serde_core",
+ "windows-sys 0.52.0",
+]
+
+[[package]]
+name = "jiff-static"
+version = "0.2.24"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e000de030ff8022ea1da3f466fbb0f3a809f5e51ed31f6dd931c35181ad8e6d7"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.117",
+]
+
+[[package]]
+name = "jiff-tzdb"
+version = "0.1.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c900ef84826f1338a557697dc8fc601df9ca9af4ac137c7fb61d4c6f2dfd3076"
+
+[[package]]
+name = "jiff-tzdb-platform"
+version = "0.1.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "875a5a69ac2bab1a891711cf5eccbec1ce0341ea805560dcd90b7a2e925132e8"
+dependencies = [
+ "jiff-tzdb",
+]
+
+[[package]]
 name = "jni"
 version = "0.21.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3736,18 +3777,21 @@ dependencies = [
  "aes 0.8.4",
  "bitflags 2.11.1",
  "cbc 0.1.2",
+ "chrono",
  "ecb",
  "encoding_rs",
  "flate2",
  "getrandom 0.3.4",
  "indexmap 2.14.0",
  "itoa 1.0.18",
+ "jiff",
  "log",
  "md-5",
  "nom",
  "nom_locate",
  "rand 0.9.4",
  "rangemap",
+ "rayon",
  "sha2 0.10.9",
  "stringprep",
  "thiserror 2.0.18",
@@ -5029,6 +5073,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "portable-atomic"
+version = "1.13.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c33a9471896f1c69cecef8d20cbe2f7accd12527ce60845ff44c153bb2a21b49"
+
+[[package]]
+name = "portable-atomic-util"
+version = "0.2.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c2a106d1259c23fac8e543272398ae0e3c0b8d33c88ed73d0cc71b0f1d902618"
+dependencies = [
+ "portable-atomic",
+]
+
+[[package]]
 name = "potential_utf"
 version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5588,7 +5647,7 @@ checksum = "dc897dd8d9e8bd1ed8cdad82b5966c3e0ecae09fb1907d58efaa013543185d0a"
 
 [[package]]
 name = "rehydrate-app"
-version = "1.0.2"
+version = "1.1.1"
 dependencies = [
  "base64 0.22.1",
  "directories",
@@ -5618,7 +5677,7 @@ dependencies = [
 
 [[package]]
 name = "rehydrate-core"
-version = "1.0.2"
+version = "1.1.1"
 dependencies = [
  "fs4",
  "hex",
@@ -5635,7 +5694,7 @@ dependencies = [
 
 [[package]]
 name = "rehydrate-device"
-version = "1.0.2"
+version = "1.1.1"
 dependencies = [
  "async-trait",
  "keyring",
@@ -5652,7 +5711,7 @@ dependencies = [
 
 [[package]]
 name = "rehydrate-http"
-version = "1.0.2"
+version = "1.1.1"
 dependencies = [
  "serde_json",
  "thiserror 2.0.18",
@@ -5662,7 +5721,7 @@ dependencies = [
 
 [[package]]
 name = "rehydrate-ocr"
-version = "1.0.2"
+version = "1.1.1"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -5682,7 +5741,7 @@ dependencies = [
 
 [[package]]
 name = "rehydrate-publish"
-version = "1.0.2"
+version = "1.1.1"
 dependencies = [
  "base64 0.22.1",
  "hex",
@@ -5698,16 +5757,17 @@ dependencies = [
 
 [[package]]
 name = "rehydrate-render"
-version = "1.0.2"
+version = "1.1.1"
 dependencies = [
  "image",
+ "lopdf",
  "printpdf",
  "rm-parser",
 ]
 
 [[package]]
 name = "rehydrate-sync"
-version = "1.0.2"
+version = "1.1.1"
 dependencies = [
  "async-trait",
  "futures",
@@ -5724,7 +5784,7 @@ dependencies = [
 
 [[package]]
 name = "rehydrate-tests-integration"
-version = "1.0.2"
+version = "1.1.1"
 dependencies = [
  "serde_json",
 ]

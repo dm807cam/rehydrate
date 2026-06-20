@@ -1,0 +1,157 @@
+/* =====================================================================
+ * Command palette (⌘K).
+ * ===================================================================== */
+
+.palette-backdrop {
+  position: fixed;
+  inset: 0;
+  background: var(--bg-overlay);
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding-top: 12vh;
+  z-index: 200;
+  animation: fadeIn var(--motion-fast) var(--ease);
+}
+.palette {
+  width: 540px;
+  max-width: 92vw;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-pop);
+  overflow: hidden;
+  animation: scaleIn var(--motion-base) var(--ease);
+}
+.palette input {
+  width: 100%;
+  border: none;
+  background: transparent;
+  padding: var(--space-3) var(--space-4);
+  font-size: var(--text-md);
+  border-bottom: 1px solid var(--border);
+  border-radius: 0;
+}
+.palette input:focus {
+  box-shadow: none;
+}
+.palette ul {
+  list-style: none;
+  margin: 0;
+  padding: 4px;
+  max-height: 60vh;
+  overflow-y: auto;
+}
+.palette li {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 9px var(--space-3);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  font-size: var(--text-sm);
+}
+.palette li.active {
+  background: var(--accent-bg);
+  color: var(--accent);
+}
+.palette li .palette-tag {
+  margin-left: auto;
+  font-size: var(--text-xs);
+  color: var(--muted);
+}
+.palette li.active .palette-tag {
+  color: var(--accent);
+}
+.palette .palette-empty {
+  padding: var(--space-4);
+  color: var(--muted);
+  font-size: var(--text-sm);
+}
+
+/* --------------------------------------------------------------
+ * Phase-6 audit additions.
+ * Utility classes extracted from inline `style={…}` props plus a
+ * few small layout helpers introduced for the new dialog
+ * accessibility pass.
+ * -------------------------------------------------------------- */
+
+/* Checkbox row used in the password dialog "Remember in keychain"
+ * affordance — aligns the box and label baseline. */
+.checkbox-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-top: var(--space-3);
+  font-size: var(--text-sm);
+}
+.checkbox-row input[type="checkbox"] {
+  margin: 0;
+}
+
+/* Dialog body paragraph — replaces inline `marginTop: 8;
+ * color: var(--muted)` on the Confirm body and similar. */
+.dialog-body {
+  margin-top: var(--space-2);
+  color: var(--muted);
+}
+
+/* `.actions` with a wider top margin for Confirm + similar. */
+.actions-spaced {
+  margin-top: var(--space-4);
+}
+
+/* `.actions` aligned to the right (QuickLook). */
+.actions-row-end {
+  display: flex;
+  gap: var(--space-2);
+  justify-content: flex-end;
+}
+
+/* StatusPill is rendered as a real <button> now; the existing
+ * `.pill.clickable` styling already covers visuals, but the button
+ * defaults bring along a few we don't want (background, border,
+ * inherited font). Reset to match the span-based pill. */
+.pill-button {
+  background: inherit;
+  border: 0;
+  padding: inherit;
+  margin: 0;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+}
+.pill-button:disabled {
+  cursor: default;
+  opacity: 0.7;
+}
+
+/* Cheatsheet rows — `display: contents` so the dt/dd inherit the
+ * surrounding <dl> grid, with inline-flex key chips. Extracted from
+ * inline styles that were sprinkled through the JSX. */
+.cheatsheet-row {
+  display: contents;
+}
+.cheatsheet-keys {
+  display: inline-flex;
+  gap: 4px;
+  align-items: center;
+}
+
+/* Loading-skeleton container used inside `.transcript-scroll`
+ * while the transcript fetch is in flight. The transcript-specific
+ * meta block has its own padding; the loading wrapper just needs
+ * tiny vertical breathing room before the Skeleton blocks render. */
+.drawer-loading {
+  padding-top: var(--space-2);
+}
+
+/* Assertive toaster sits below the polite one inside the shared
+ * `.toaster-anchor` wrapper. Two distinct regions because screen
+ * readers cap how many polite announcements they merge and we want
+ * error toasts read immediately. No extra positioning needed —
+ * the anchor's `flex-direction: column` stacks them vertically. */
+.toaster-assertive {
+  /* Reserved for future variations; visual stacking is owned by
+   * `.toaster-anchor`. */
+}

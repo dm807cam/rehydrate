@@ -1,0 +1,121 @@
+/* =====================================================================
+ * Grid view.
+ * ===================================================================== */
+
+.docs-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  gap: var(--space-4);
+  padding: var(--space-4);
+}
+.docs-grid .tile {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-2);
+  border-radius: var(--radius-md);
+  cursor: grab;
+  transition:
+    background var(--motion-fast) var(--ease),
+    transform var(--motion-fast) var(--ease);
+  position: relative;
+}
+.docs-grid .tile:hover {
+  background: var(--row-hover);
+}
+.docs-grid .tile.selected {
+  background: var(--row-selected);
+}
+.docs-grid .tile:active {
+  cursor: grabbing;
+}
+.docs-grid .tile .title-line {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--text-sm);
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.docs-grid .tile .title-line .icon-svg {
+  flex: none;
+  color: var(--muted);
+}
+.docs-grid .tile .meta {
+  display: flex;
+  gap: 6px;
+  font-size: var(--text-xs);
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+.docs-grid .tile .row-pill {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  margin: 0;
+}
+.docs-grid .tile .tile-kebab {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  opacity: 0;
+  transition: opacity var(--motion-base) var(--ease);
+}
+.docs-grid .tile:hover .tile-kebab,
+.docs-grid .tile:focus-within .tile-kebab {
+  opacity: 1;
+}
+/* When the row-pill is also showing, push the kebab left so they
+ * don't overlap. The pill's `right: 12px` plus its padding lands
+ * at ~70px wide; clear that with comfortable margin. */
+.docs-grid .tile:has(.row-pill) .tile-kebab {
+  right: 88px;
+}
+.docs-grid .tile.leaving {
+  animation: rowCollapse var(--motion-base) var(--ease) forwards;
+  pointer-events: none;
+}
+
+/* =====================================================================
+ * Quick Look popover (Space key).
+ * ===================================================================== */
+
+.quicklook-backdrop {
+  position: fixed;
+  inset: 0;
+  background: var(--bg-overlay);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 150;
+  animation: fadeIn var(--motion-fast) var(--ease);
+}
+.quicklook {
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-pop);
+  padding: var(--space-5);
+  width: 380px;
+  max-width: 92vw;
+  display: grid;
+  gap: var(--space-3);
+  animation: scaleIn var(--motion-base) var(--ease);
+}
+.quicklook .preview {
+  display: flex;
+  justify-content: center;
+}
+.quicklook h2 {
+  margin: 0;
+  font-size: var(--text-xl);
+  letter-spacing: -0.01em;
+  font-weight: 600;
+  word-break: break-word;
+}
+.quicklook .kv {
+  margin: 0;
+}
+

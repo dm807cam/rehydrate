@@ -8,33 +8,224 @@ library on-disk format is forward-stable from `0.9.0`.
 
 ## [Unreleased]
 
+## [1.1.1] — 2026-05-21
+
+Feature-rich release on the v1 line. Adds bulk PDF export, image
+and Word-document drag-import, a "My Files" view, column sorting,
+a Tablet Trash view with a one-click purge, archive multi-select,
+and a string of UX fixes (sticky selection bar, persistent folder
+expand state, visible chevrons, refresh buttons). Bug-fix
+highlights include the rMPP "No such file" sync skip, the
+purged-doc resurrection on next pull, and the sub-folder drop
+target that always landed in root. No on-disk format changes; the
+existing library and version log are forward-compatible. The
+macOS bundle is still Apple-Silicon-only, still unsigned, and
+still requires the right-click → Open dance on first launch.
+
+### Added
+
+- **Bulk export to PDFs.** New "Export All" button in the
+  toolbar, plus per-folder export from the folder kebab menu and
+  per-selection export from the multi-select bar. Three Tauri
+  commands back it (`export_as_pdfs`, `export_selected_as_pdfs`,
+  `pick_export_directory`); a new `ExportOptionsDialog` lets the
+  user toggle annotation overlay and the "keep local copies of
+  deleted notes" backup mode. Progress streams live via
+  `export:progress`.
+- **Folder-mirroring output.** The exported tree mirrors the
+  reHydrate folder hierarchy on disk — a notebook at
+  `Research/Papers/foo` lands at
+  `<target>/Research/Papers/foo.pdf`.
+- **Incremental re-export.** A `.rehydrate-export.json` state
+  file at the target root remembers
+  `(version_id, path, include_annotations)` per document.
+  Subsequent runs skip unchanged documents and clean up files
+  for documents that were trashed, moved out of scope, or
+  renamed — with an opt-out via the "keep deleted" checkbox
+  (defaults to on, so the user's exported library is treated as
+  a backup that doesn't surprise-delete files).
+- **Annotation overlay on exported PDFs.** When
+  `include_annotations` is on, `.rm` v6 strokes are composited
+  onto the underlying PDF via a new `overlay_annotations_on_pdf`
+  pass backed by `lopdf`.
+- **"My Files" sidebar view.** A root-level view that shows only
+  documents at the top of the library
+  (`parent === null`), alongside the existing "All Documents" /
+  kind filters.
+- **Column sorting in the document list.** Click a column header
+  to sort by Title / Type / Pages / Modified / Status; sort
+  preference persists across launches.
+- **Multi-select bulk actions.** Selecting multiple documents now
+  exposes Export, Move, and Archive in the selection bar.
+- **Empty Tablet Trash.** A new command-palette entry
+  hard-deletes every document the tablet has soft-deleted
+  (those with `deleted: true` in their `.metadata`) over SFTP,
+  reclaiming device storage without touching the tablet.
+- **Tablet Trash sidebar view.** A `"device_trash"` entry filters
+  the document list to `parent === "trash"`, so the user can
+  inspect what the tablet has soft-deleted before purging. An
+  inline "Empty Tablet Trash…" button appears in the view header
+  when the list is non-empty.
+- **Image drag-import.** Drop a PNG / JPG / GIF / BMP / TIFF /
+  WEBP onto the document list and reHydrate transparently
+  converts it to a single-page PDF (via the existing
+  `build_pdf_from_image_bytes` path) and imports it. Small
+  images are upsampled with Lanczos3 so they don't look blocky
+  on the tablet.
+- **Word-document drag-import.** Drop a `.docx`, `.doc`, `.odt`,
+  or `.rtf` and reHydrate calls a local LibreOffice
+  (`/Applications/LibreOffice.app`, Homebrew, or PATH) to convert
+  to PDF before importing. A clear error toast fires if
+  LibreOffice isn't installed.
+- **Archive multi-select.** The Archive page now supports
+  checkbox selection with shift+click range, a select-all header
+  checkbox with an indeterminate state, and a toolbar showing
+  "N of M selected" plus **Restore (N)** and
+  **Delete forever (N)** buttons. Per-row single-item actions
+  moved to the kebab menu.
+- **Sticky selection bar.** The multi-select action bar
+  (Clear / Move / Export / Archive) now pins to the top of the
+  content pane while the user scrolls a long document list.
+  Column headers reposition themselves automatically via a
+  `ResizeObserver`-driven CSS variable so they don't collide
+  with the pinned bar.
+- **Select-all in document list.** In select mode, the Title
+  column header gains a checkbox (empty / dash / checked
+  depending on selection state). Clicking it selects every
+  filtered document. The selection bar also exposes a "Select
+  all" button.
+- **Refresh buttons for Archive and Tablet Trash.** A ↻ icon in
+  the content header pulls a fresh list without forcing a full
+  sync.
+- **Persistent folder expand state.** The sidebar folder tree
+  now remembers which folders are open across app restarts
+  (stored in `localStorage` under `rh.expanded`).
+- **Visible folder expand chevron.** Replaced the small `▸` / `•`
+  glyphs with a 10×10 SVG chevron that rotates 90° when open.
+  Leaf folders render no indicator at all. 150 ms ease
+  transition for continuous feedback.
+- **Sync activity in the log.** Both pull and push phases now
+  emit `tracing::info!` events (started, per-document,
+  complete). The log was previously silent during sync.
+- **`Tool::Shader` recognised.** A new `.rm` v6 tool variant
+  (firmware code `0x17`) is parsed and rendered identically to
+  the Highlighter.
+
 ### Fixed
 
-- **Sync (rMPP)**: stop skipping whole documents when the optional
-  per-document directory `xochitl/<uuid>/` is absent on the device.
-  The SFTP error classifier was matching the Debug spelling
-  `"NoSuchFile"` against an error whose Display is `"No such file"`,
-  so a benign "directory does not exist" was demoted to
-  `DeviceError::Other` and propagated up to the pull loop as a
-  document-level failure. The classifier now matches the typed
-  `russh_sftp::protocol::StatusCode::NoSuchFile` variant, with a
-  case-insensitive substring fallback, and the optional-directory
-  probe in `fetch_document_tree` routes through the same classifier
-  so the two sites can't drift again (#63).
+- **Sync (rMPP)**: stop skipping whole documents when the
+  optional per-document directory `xochitl/<uuid>/` is absent on
+  the device. The SFTP error classifier was matching the Debug
+  spelling `"NoSuchFile"` against an error whose Display is
+  `"No such file"`, so a benign "directory does not exist" was
+  demoted to `DeviceError::Other` and propagated up to the pull
+  loop as a document-level failure. The classifier now matches
+  the typed `russh_sftp::protocol::StatusCode::NoSuchFile`
+  variant, with a case-insensitive substring fallback, and the
+  optional-directory probe in `fetch_document_tree` routes
+  through the same classifier so the two sites can't drift again
+  (#63).
 - **Sync (rMPP)**: the sibling probe for the optional
   `xochitl/<uuid>.thumbnails` directory used to swallow *every*
   error — a transient SFTP failure would silently drop the
   thumbnails subtree and the document was still recorded as a
   successful sync. It now routes through the same classifier as
-  the `xochitl/<uuid>/` probe: `NotFound` is benign, anything else
-  propagates.
+  the `xochitl/<uuid>/` probe: `NotFound` is benign, anything
+  else propagates.
+- **Purged documents re-appearing on the next pull.** If the
+  user purged a document while the tablet was unreachable, the
+  immediate SFTP delete failed and the local `sync_state` row
+  was deleted; the next pull saw the document still on the
+  device, classified it as `New`, and re-downloaded what the
+  user had just permanently deleted. A new
+  `device_deletion_queue` SQLite tombstone table (migration
+  `0008_device_deletion_queue.sql`) persists purge intent across
+  sessions, and the pull engine consumes it before classifying
+  each device entry.
+- **Dropped files always importing to root** regardless of which
+  folder row was the drop target. Two independent bugs: the
+  `FolderRow.onDrop` early-`return`ed without
+  `e.preventDefault()`, so the event bubbled to the root
+  handler; and `import_file` hardcoded `"parent": ""` in the
+  metadata JSON, ignoring any folder id passed by the caller.
+  Both fixed — the import now lands in the dropped-on folder.
+- **Sync button disabled when only folder operations were
+  pending.** `PushPlan.items` only tracked document pushes;
+  folder-only changes (create, rename, delete) made the "Start
+  sync" button look like there was nothing to do. `PushPlan`
+  gained a `pending_folders: usize` field, populated from
+  `Library::list_pending_folder_pushes`, and the UI gates on
+  `totalActive > 0 || pending_folders > 0`.
+- **Empty Tablet Trash didn't refresh the UI.** The IPC command
+  succeeded but the renderer never called `refreshLibrary()`,
+  so the Tablet Trash view kept showing the entries that had
+  just been deleted.
+- **Double extension on exported PDFs.** Documents whose
+  `visible_name` already ended in `.pdf` or `.epub` produced
+  `name.pdf.pdf` filenames on export. Fixed.
+- **Shift+click range selection** used the unsorted
+  `filteredDocs` array, so the selected range didn't match the
+  user's displayed sort order. Fixed by ranging over the sorted
+  view.
+- **Shift+clicking a row highlighted surrounding text** because
+  the browser's default text-selection kicked in.
+  `e.preventDefault()` in the `<tr>` onClick and the
+  selection-bar buttons; `user-select: none` on
+  `.selection-bar`.
+- **Log filename extension.** The rolling log appender produced
+  `rehydrate.log.YYYY-MM-DD`, which macOS treated as having
+  extension `.YYYY-MM-DD` and refused to open as text. Now
+  produces `rehydrate.YYYY-MM-DD.log`.
+- **`RUST_LOG=rehydrate=debug` was a no-op** because no crate is
+  named `rehydrate` — they are all `rehydrate_sync`,
+  `rehydrate_app`, etc. The default filter now enumerates every
+  crate explicitly so debug events actually reach the log file.
 
-### Credits
+### Changed (internal)
 
-- Thanks again to
-  [u/shuusaku](https://www.reddit.com/r/RemarkableTablet/comments/1tccfh3/)
-  for spotting the rMPP "No such file" classification bug and
-  reporting it with the exact root cause.
+Six oversized files were split into focused per-concern modules.
+Public APIs, Tauri command names, and on-disk artefacts are
+unchanged. Each split is its own commit so individual pieces can
+be reviewed in isolation. Full rationale and file-layout tables
+live in [`docs/refactor-notes.md`](docs/refactor-notes.md).
+
+- `rehydrate-app::commands` — 2268-line `commands.rs` split into
+  ten files under `commands/` along the existing
+  `// ---------- X ----------` banner seams (library, documents,
+  folders, import, export, device, sync, logs, misc, util).
+  Largest after: 486 lines.
+- `rehydrate-app::ocr_commands` — 1259-line `ocr_commands.rs`
+  split into `ollama.rs` (config + reachability),
+  `transcribe.rs` (transcribe + transcript reads + OCR-candidates
+  listing), `export_md.rs` (txt / md export), `publish.rs`
+  (Ghost / WordPress).
+- `rehydrate-device::ssh` — 1450-line `ssh.rs` split into
+  `mod.rs` (struct + lifecycle + `is_reachable`), `handler.rs`
+  (TOFU host-key flow), `io.rs` (timeout / SFTP helpers +
+  classifier tests), `device_impl.rs` (`impl Device for
+  SshDevice` + subtree walkers).
+- `rehydrate-render` — 1041-line `lib.rs` split into `lib.rs`
+  (public API + cache-busting constants), `dims.rs`,
+  `strokes.rs` (v6 scene walk shared between PDF generation and
+  overlay), `rm_to_pdf.rs`, `image_to_pdf.rs`, `overlay.rs`.
+- `rehydrate-core::library` — 4594-line `library.rs` split into
+  `library/` using nine multi-`impl Library` block files
+  (`blobs`, `versions`, `documents`, `folders`, `archive`,
+  `import`, `derived`, `maintenance`, plus `mod.rs` and
+  `tests.rs`). The `Library` struct itself is unchanged.
+- `ui/src/styles.css` — 2782-line stylesheet split into 19
+  per-concern files under `styles/`, with the original
+  `styles.css` reduced to an `@import` entry. Vite resolves at
+  build time so the production CSS bundle is byte-identical.
+- `ui/src/App.tsx` — 3685 lines reduced to 2387 by moving the
+  eight stateless sub-components (`WelcomeEmpty`, `SidebarItem`,
+  `FolderTree`, `FolderRow`, `DocumentList`, `DocumentGrid`,
+  `ArchiveList`, `DocumentListSkeleton`, `TypeIcon`) and the
+  pure helpers (`sortDocuments`, `loadSortPref`,
+  `buildFolderTree`, `prettyType`, `prettyDate`, `formatBytes`)
+  into `components/AppSubviews.tsx`. Hook extraction inside
+  `App()` itself is deliberately left for a future pass — see
+  the follow-ups section in `docs/refactor-notes.md`.
 
 ## [1.0.2] — 2026-05-17
 

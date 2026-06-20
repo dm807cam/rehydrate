@@ -1,0 +1,115 @@
+/* =====================================================================
+ * Select mode (Files-app pattern).
+ * ===================================================================== */
+
+.docs.select-mode tbody tr {
+  cursor: default;
+}
+.docs .check-cell {
+  width: 32px;
+  padding-left: 12px;
+  padding-right: 0;
+  vertical-align: middle;
+}
+.check-box {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  color: var(--muted);
+  cursor: pointer;
+  transition: color var(--motion-fast) var(--ease);
+}
+.check-box:hover {
+  color: var(--accent);
+}
+.check-box.checked,
+.check-box.indeterminate {
+  color: var(--accent);
+}
+
+/* Archive-page multi-select toolbar (mirrors .selection-bar) */
+.archive-toolbar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: 8px var(--space-4);
+  background: var(--bg-elev);
+  border-bottom: 1px solid var(--border);
+  font-size: var(--text-sm);
+  user-select: none;
+}
+.archive-toolbar .spacer { flex: 1; }
+.archive-toolbar button {
+  padding: 4px 10px;
+  font-size: var(--text-sm);
+}
+.archive-toolbar .selected-hint {
+  color: var(--muted);
+  font-size: var(--text-sm);
+}
+
+.tile-check {
+  position: absolute;
+  top: 10px;
+  left: 10px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: var(--radius-pill);
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  color: var(--muted);
+  z-index: 2;
+  box-shadow: var(--shadow-1);
+}
+.tile-check.checked {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+/* Toolbar Select toggle gets the same active treatment as the view
+ * switch so it reads as "stuck on" while the mode is engaged. */
+.content-header button.icon.active {
+  background: var(--accent-bg);
+  color: var(--accent);
+  border-color: transparent;
+}
+
+/* =====================================================================
+ * View-switch segmented control.
+ * ===================================================================== */
+
+.view-switch {
+  display: inline-flex;
+  background: var(--bg-sunken);
+  border-radius: var(--radius-md);
+  padding: 2px;
+  gap: 0;
+}
+.view-switch button {
+  width: 28px;
+  height: 24px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  border-radius: var(--radius-sm);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.view-switch button.active {
+  background: var(--bg-elev);
+  color: var(--text);
+  box-shadow: var(--shadow-1);
+}
+.view-switch button:hover:not(.active) {
+  color: var(--text);
+  background: transparent;
+  border: none;
+}
+

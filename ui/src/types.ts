@@ -69,6 +69,19 @@ export interface ExportResult {
   file_count: number;
 }
 
+export interface ExportAsPdfsResult {
+  exported: number;
+  skipped: number;
+  deleted: number;
+  target_dir: string;
+}
+
+export interface ExportProgressEvent {
+  current: number;
+  total: number;
+  current_file: string;
+}
+
 /// Paths returned by `ipc.prepareExportPdf`. `file` is the staged
 /// document (passed as the `item` to the native drag-out plugin so
 /// the OS sees a real file drop), `icon` is the drag-preview PNG
@@ -167,6 +180,10 @@ export interface PushItem {
 
 export interface PushPlan {
   items: PushItem[];
+  /** Folder creates/renames/deletes queued for the next push. Not in
+   * `items` because they have no per-document progress events; exposed
+   * here so the UI can count them when deciding whether to enable sync. */
+  pending_folders: number;
 }
 
 export interface VerifyReport {

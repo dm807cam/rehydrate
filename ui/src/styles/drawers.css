@@ -1,0 +1,494 @@
+/* =====================================================================
+ * Modal & drawer.
+ * ===================================================================== */
+
+.modal-backdrop,
+.drawer-backdrop {
+  position: fixed;
+  inset: 0;
+  background: var(--bg-overlay);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+  animation: fadeIn var(--motion-base) var(--ease);
+}
+.modal {
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: var(--space-5);
+  width: 460px;
+  max-width: 90vw;
+  box-shadow: var(--shadow-pop);
+  animation: scaleIn var(--motion-base) var(--ease);
+}
+.modal h2 {
+  margin: 0 0 var(--space-2);
+  font-size: var(--text-xl);
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+.modal p {
+  margin: 0;
+  line-height: 1.55;
+}
+.modal form {
+  margin-top: var(--space-4);
+  display: grid;
+  gap: var(--space-3);
+}
+.modal .actions {
+  display: flex;
+  gap: var(--space-2);
+  justify-content: flex-end;
+}
+.modal .actions button[type="submit"] {
+  background: var(--accent);
+  color: var(--accent-fg);
+  border-color: var(--accent);
+}
+.modal .actions button[type="submit"].danger {
+  background: var(--danger);
+  color: white;
+  border-color: var(--danger);
+}
+
+/* "Choose a folder" picker modal. The list inside is scrollable so a
+ * library with many folders can still fit the dialog within the viewport. */
+.choose-folder-modal {
+  width: 460px;
+  max-width: 90vw;
+}
+.folder-picker {
+  list-style: none;
+  margin: var(--space-3) 0;
+  padding: var(--space-1) 0;
+  max-height: 320px;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+.folder-picker-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 6px var(--space-3);
+  cursor: pointer;
+  user-select: none;
+}
+.folder-picker-row:hover {
+  background: var(--row-hover);
+}
+.folder-picker-row.active {
+  background: var(--accent-bg);
+  color: var(--accent);
+}
+.folder-picker-row.active .icon-svg {
+  color: var(--accent);
+}
+.folder-picker-row.new-folder {
+  color: var(--muted);
+  font-style: italic;
+}
+.folder-picker-row.creating {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 4px var(--space-3);
+}
+.folder-picker-row.creating input {
+  flex: 1;
+  padding: 4px var(--space-2);
+  font-size: var(--text-sm);
+}
+.folder-picker-row.creating button {
+  padding: 4px var(--space-2);
+  font-size: var(--text-xs);
+}
+.choose-folder-modal .actions {
+  margin-top: var(--space-2);
+  display: flex;
+  gap: var(--space-2);
+  justify-content: flex-end;
+}
+
+/* Full-window overlay that appears while the user is dragging files
+ * from outside the app (Finder/Explorer) over the window. Sits above
+ * everything else so the drop target is unmissable; pointer-events
+ * stay off so the actual drop still fires on the underlying .app
+ * handler. */
+.import-overlay {
+  position: fixed;
+  inset: 0;
+  background: var(--bg-overlay, rgba(20, 20, 24, 0.45));
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 200;
+  pointer-events: none;
+  animation: fadeIn var(--motion-base) var(--ease);
+}
+.import-overlay-card {
+  background: var(--bg-elev);
+  border: 2px dashed var(--accent);
+  border-radius: var(--radius-lg);
+  padding: var(--space-5) var(--space-6);
+  box-shadow: var(--shadow-pop);
+  display: grid;
+  justify-items: center;
+  gap: var(--space-2);
+  max-width: 380px;
+  text-align: center;
+  animation: scaleIn var(--motion-base) var(--ease);
+}
+.import-overlay-card .icon-svg {
+  color: var(--accent);
+}
+.import-overlay-card h2 {
+  margin: 0;
+  font-size: var(--text-xl);
+  font-weight: 600;
+}
+.import-overlay-card p {
+  margin: 0;
+  color: var(--muted);
+  line-height: 1.5;
+}
+
+/* Wider modal used by the Settings panel — the credential forms and
+ * the Ollama tab benefit from more horizontal room than the default
+ * 460 px. */
+.modal.modal-wide {
+  width: 620px;
+}
+.modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: var(--space-3);
+}
+.modal-header h2 {
+  margin: 0;
+}
+
+/* SettingsModal: tabs + sections. */
+.settings-tabs {
+  display: flex;
+  gap: var(--space-2);
+  border-bottom: 1px solid var(--border);
+  margin-bottom: var(--space-3);
+}
+.settings-tabs button {
+  background: transparent;
+  border: 0;
+  padding: var(--space-2) var(--space-3);
+  margin-bottom: -1px;
+  color: var(--muted);
+  font-weight: 500;
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+}
+.settings-tabs button.active {
+  color: var(--text);
+  border-bottom-color: var(--accent);
+}
+.settings-banner {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  background: var(--accent-bg);
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-sm);
+  margin-bottom: var(--space-3);
+  color: var(--accent);
+  font-size: var(--text-sm);
+}
+.settings-section {
+  display: grid;
+  gap: var(--space-3);
+}
+.settings-section h3 {
+  margin: var(--space-2) 0 0;
+  font-size: var(--text-md);
+}
+.settings-section label {
+  display: grid;
+  gap: 4px;
+  font-size: var(--text-sm);
+  color: var(--muted);
+}
+.settings-section input[type="text"],
+.settings-section input[type="url"],
+.settings-section input[type="password"],
+.settings-section select {
+  padding: 6px var(--space-2);
+  font-size: var(--text-sm);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg);
+  color: var(--text);
+}
+.settings-section .actions {
+  display: flex;
+  gap: var(--space-2);
+  margin-top: var(--space-2);
+}
+.settings-checkbox {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-3);
+  padding: var(--space-2) 0;
+  cursor: pointer;
+}
+.settings-checkbox input[type="checkbox"] {
+  margin-top: 4px;
+  accent-color: var(--accent);
+}
+.settings-checkbox > span {
+  display: grid;
+  gap: 4px;
+  color: var(--text);
+  font-size: var(--text-sm);
+}
+.settings-checkbox > span > strong {
+  font-weight: 500;
+}
+.settings-checkbox > span > .muted {
+  font-weight: 400;
+  line-height: 1.4;
+}
+
+.settings-ping {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-sm);
+  font-size: var(--text-sm);
+}
+.settings-ping.ok {
+  background: var(--ok-bg);
+  color: var(--ok);
+}
+.settings-ping.err {
+  background: var(--err-bg);
+  color: var(--err);
+}
+
+/* Background OCR job chip — small floating pill in the bottom-right.
+ * Renders only while a transcription is in progress; clicking ×
+ * hides the chip (job keeps running). */
+.ocr-chip {
+  position: fixed;
+  right: var(--space-4);
+  bottom: var(--space-4);
+  z-index: 80;
+  display: grid;
+  grid-template-columns: 1fr auto;
+  grid-template-rows: auto auto;
+  align-items: center;
+  gap: 4px var(--space-3);
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: var(--space-2) var(--space-3);
+  box-shadow: var(--shadow-pop);
+  min-width: 260px;
+  max-width: 360px;
+}
+.ocr-chip-bar {
+  grid-column: 1 / -1;
+  height: 3px;
+  background: var(--border);
+  border-radius: 999px;
+  overflow: hidden;
+}
+.ocr-chip-bar .indeterminate {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+  border-radius: inherit;
+  transition: width var(--motion-base) var(--ease);
+}
+.ocr-chip-text {
+  display: grid;
+  gap: 2px;
+}
+.ocr-chip-close {
+  background: transparent;
+  border: 0;
+  color: var(--muted);
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 4px;
+}
+
+/* Transcript drawer.
+ *
+ * The parent `.drawer` is a CSS grid with rows
+ * `auto auto 1fr auto`. The drawer's four immediate children map
+ * 1:1: `<header>` (auto), `.transcript-meta` (auto),
+ * `.transcript-scroll` (1fr, the scrollable region), and
+ * `<footer.transcript-footer>` (auto). The earlier version put the
+ * model line straight under the header, which got slotted into
+ * the `1fr` row and produced an enormous empty band above the
+ * transcript text. The new shape lets the body fill the available
+ * height naturally and the action buttons stick to the bottom
+ * even when the transcript is long enough to scroll. */
+.transcript-meta {
+  padding: var(--space-3) var(--space-5);
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.transcript-meta-title {
+  font-weight: 600;
+  font-size: var(--text-md);
+  color: var(--text);
+  /* Truncate runaway titles so the meta block stays one or two
+   * lines tall — we don't want a 4-line title pushing the
+   * transcript off-screen. */
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  word-break: break-word;
+}
+.transcript-meta-sub {
+  /* Inherits `.muted .small`; only layout overrides here. */
+}
+.transcript-scroll {
+  overflow-y: auto;
+  /* Tight top padding (`space-2` = 8 px) so the body sits close
+   * to the meta block's bottom border — the previous `space-3`
+   * (12 px) + the body's own 12 px inner padding stacked to a
+   * 24 px visual gap, which read as "extra empty space between
+   * title and body" even though nothing was misaligned. Bottom
+   * padding stays generous so a long transcript doesn't kiss the
+   * footer's top border. Plain block flow: only one child
+   * (`.transcript-body` + an optional inline error pill) — flex
+   * machinery here bought nothing and obscured intent. */
+  padding: var(--space-2) var(--space-5) var(--space-3);
+}
+.transcript-empty {
+  margin: 0;
+  font-size: var(--text-sm);
+}
+/* Inline error pill, when shown, separates from the body
+ * naturally without needing flex/gap wiring on the parent. */
+.transcript-scroll .error.inline {
+  margin-top: var(--space-3);
+}
+.transcript-body {
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, monospace);
+  font-size: var(--text-sm);
+  line-height: 1.55;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: var(--space-3);
+  margin: 0;
+  /* No `max-height` — the parent `.transcript-scroll` owns the
+   * scroll. Letting both scroll produces the nested-scroll-bars
+   * artefact and an arbitrary 50vh ceiling that doesn't match the
+   * drawer's actual content area. */
+}
+.transcript-footer {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-5);
+  border-top: 1px solid var(--border);
+  background: var(--bg-elev);
+}
+.drawer-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin-top: var(--space-3);
+}
+
+.drawer-backdrop {
+  align-items: stretch;
+  justify-content: flex-end;
+}
+.drawer {
+  background: var(--bg-elev);
+  border-left: 1px solid var(--border);
+  width: 480px;
+  max-width: 90vw;
+  display: grid;
+  grid-template-rows: auto auto 1fr auto;
+  height: 100vh;
+  box-shadow: var(--shadow-3);
+  animation: slideInRight var(--motion-slow) var(--ease-out);
+}
+.drawer header {
+  display: flex;
+  align-items: center;
+  padding: var(--space-4) var(--space-5);
+  border-bottom: 1px solid var(--border);
+}
+.drawer header h2 {
+  margin: 0;
+  flex: 1;
+  font-size: var(--text-lg);
+  font-weight: 600;
+}
+.drawer header > div {
+  flex: 1;
+}
+.drawer .plan-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: var(--space-3) var(--space-5);
+  border-bottom: 1px solid var(--border);
+}
+.drawer .plan-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+}
+.drawer .plan-list li {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px var(--space-5);
+  border-bottom: 1px solid var(--border);
+  transition: background var(--motion-fast) var(--ease);
+}
+.drawer .plan-list li.active {
+  background: var(--accent-bg);
+}
+.drawer .plan-list .title {
+  flex: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.drawer footer {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-5);
+  border-top: 1px solid var(--border);
+}
+.drawer footer .report {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+.drawer footer button.primary {
+  margin-left: auto;
+}
+

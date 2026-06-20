@@ -1,0 +1,129 @@
+/* =====================================================================
+ * Popover.
+ * ===================================================================== */
+
+.popover {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  min-width: 240px;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-3);
+  padding: var(--space-3);
+  z-index: 50;
+  animation: slideInUp var(--motion-base) var(--ease-out);
+}
+/* Left-anchored variant. The default rule above flares the
+ * popover leftward from its trigger, which is right for toolbar
+ * actions on the right edge (kebab, etc.) but wrong for triggers
+ * that live on the LEFT side of the toolbar — those overflow the
+ * window. Triggers near the left edge should opt into
+ * `popover-start` so the popover flares rightward instead. */
+.popover.popover-start {
+  right: auto;
+  left: 0;
+}
+.popover.menu {
+  padding: 4px;
+  min-width: 220px;
+}
+.popover.menu button {
+  width: 100%;
+  justify-content: flex-start;
+  background: transparent;
+  border: none;
+  padding: 7px 10px;
+  border-radius: var(--radius-xs);
+  color: var(--text);
+  font-size: var(--text-sm);
+}
+.popover.menu button:hover:not(:disabled) {
+  background: var(--row-hover);
+  color: var(--text);
+  border-color: transparent;
+}
+.popover.menu .menu-divider {
+  height: 1px;
+  background: var(--border);
+  margin: 4px 0;
+}
+.popover.menu .menu-label {
+  font-size: var(--text-xs);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+  padding: 6px 10px 2px;
+}
+.popover .kv {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 4px var(--space-3);
+  font-size: var(--text-sm);
+}
+.popover .kv dt {
+  color: var(--muted);
+}
+.popover .kv dd {
+  margin: 0;
+  font-variant-numeric: tabular-nums;
+}
+
+.popover-host {
+  position: relative;
+  display: inline-flex;
+}
+
+/* =====================================================================
+ * Drag preview card (custom drag image rendered off-screen).
+ * ===================================================================== */
+
+.drag-preview {
+  position: fixed;
+  top: -1000px;
+  left: -1000px;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 8px 12px;
+  background: var(--bg-elev);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-2);
+  font-size: var(--text-sm);
+  color: var(--text);
+  pointer-events: none;
+  white-space: nowrap;
+  max-width: 320px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.drag-preview .icon-svg {
+  color: var(--accent);
+  flex: none;
+}
+
+/* =====================================================================
+ * Row exit animation. Apply `.leaving` to a row to collapse + fade it
+ * out; remove from data after the animation completes.
+ * ===================================================================== */
+
+@keyframes rowCollapse {
+  from {
+    opacity: 1;
+    transform: translateX(0);
+    background: var(--row-selected);
+  }
+  to {
+    opacity: 0;
+    transform: translateX(120px);
+    background: transparent;
+  }
+}
+
+.docs tbody tr.leaving {
+  animation: rowCollapse var(--motion-base) var(--ease) forwards;
+  pointer-events: none;
+}
+

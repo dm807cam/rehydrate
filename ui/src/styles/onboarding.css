@@ -1,0 +1,97 @@
+/* =====================================================================
+ * Selection summary bar shown above the doc list when N>0 selected.
+ * ===================================================================== */
+
+.selection-bar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: 8px var(--space-4);
+  background: var(--accent-bg);
+  color: var(--accent);
+  border-bottom: 1px solid var(--accent-border);
+  font-size: var(--text-sm);
+  user-select: none;
+  animation: slideInUp var(--motion-base) var(--ease);
+}
+.selection-bar .spacer { flex: 1; }
+.selection-bar button {
+  background: transparent;
+  border: 1px solid var(--accent-border);
+  color: var(--accent);
+}
+.selection-bar button:hover:not(:disabled) {
+  background: rgba(41, 96, 230, 0.12);
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.selection-bar button.danger {
+  color: var(--danger);
+  border-color: color-mix(in srgb, var(--danger), transparent 70%);
+}
+.selection-bar button.danger:hover:not(:disabled) {
+  background: var(--danger-bg);
+  color: var(--danger);
+  border-color: var(--danger);
+}
+
+/* =====================================================================
+ * Onboarding pager.
+ * ===================================================================== */
+
+.onboarding {
+  max-width: 720px;
+  margin: 0 auto;
+  padding: var(--space-7) var(--space-5);
+  display: grid;
+  gap: var(--space-4);
+  text-align: center;
+  animation: fadeIn var(--motion-base) var(--ease);
+}
+.onboarding .step-art {
+  width: 120px;
+  height: 120px;
+  margin: 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-xl);
+  background: var(--accent-bg);
+  color: var(--accent);
+}
+.onboarding h1 {
+  font-size: var(--text-2xl);
+  letter-spacing: -0.02em;
+  margin: 0;
+  font-weight: 600;
+}
+.onboarding p {
+  margin: 0 auto;
+  max-width: 460px;
+  color: var(--muted);
+  line-height: 1.55;
+}
+.onboarding .actions {
+  display: flex;
+  gap: var(--space-2);
+  justify-content: center;
+  margin-top: var(--space-3);
+}
+.onboarding .dots {
+  display: flex;
+  gap: 6px;
+  justify-content: center;
+  margin-top: var(--space-2);
+}
+.onboarding .dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--border-strong);
+}
+.onboarding .dot.active {
+  background: var(--accent);
+  width: 18px;
+  border-radius: 999px;
+}
+

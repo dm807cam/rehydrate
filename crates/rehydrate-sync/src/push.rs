@@ -34,6 +34,12 @@ pub struct PushItem {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PushPlan {
     pub items: Vec<PushItem>,
+    /// Number of pending folder operations (creates, renames, deletes).
+    /// These are not represented as `items` because they have no
+    /// per-document progress events; they are processed in a single pass
+    /// inside `execute_push`. The field is exposed here so the UI can
+    /// count them when deciding whether there is anything to sync.
+    pub pending_folders: usize,
 }
 
 pub fn plan_push(library: &Library) -> SyncResult<PushPlan> {
@@ -41,6 +47,7 @@ pub fn plan_push(library: &Library) -> SyncResult<PushPlan> {
     // needs to reach the device. After the push, last_seen_manifest gets
     // updated and they classify as Unchanged on the next plan_push.
     let docs = library.list_pushable_documents()?;
+    let pending_folders = library.list_pending_folder_pushes()?.len();
     let mut items = Vec::with_capacity(docs.len());
     for doc in docs {
         let last_seen = library.last_seen(&doc.document_id)?;
@@ -64,7 +71,10 @@ pub fn plan_push(library: &Library) -> SyncResult<PushPlan> {
         };
         items.push(item);
     }
-    Ok(PushPlan { items })
+    Ok(PushPlan {
+        items,
+        pending_folders,
+    })
 }
 
 #[derive(Debug, Clone)]
@@ -82,6 +92,12 @@ pub async fn execute_push(
     cancel: Cancel,
 ) -> SyncResult<PushReport> {
     let total = plan.items.len();
+    let outbound = plan
+        .items
+        .iter()
+        .filter(|i| i.status == PushItemStatus::Outbound)
+        .count();
+    tracing::info!(total, outbound, "push started");
     if let Some(p) = &progress {
         let _ = p
             .send(ProgressEvent::PlanReady {
@@ -132,6 +148,11 @@ pub async fn execute_push(
 
         match push_one(library, device, &item, progress.as_ref()).await {
             Ok(()) => {
+                tracing::info!(
+                    uuid = %item.document.document_id,
+                    name = %item.document.visible_name,
+                    "pushed document"
+                );
                 if let Some(p) = &progress {
                     let _ = p
                         .send(ProgressEvent::DocumentCompleted {
@@ -258,6 +279,7 @@ pub async fn execute_push(
             })
             .await;
     }
+    tracing::info!(pushed, unchanged, skipped, "push complete");
     Ok(PushReport {
         pushed,
         unchanged,

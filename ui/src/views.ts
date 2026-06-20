@@ -15,6 +15,8 @@ export type View =
   | "pdfs"
   | "epubs"
   | "archive"
+  | "device_trash"
+  | "root"
   | { kind: "folder"; id: string };
 
 export function viewKey(v: View): string {
@@ -41,6 +43,10 @@ export function viewTitle(v: View, folders: FolderEntry[]): string {
       return "EPUBs";
     case "archive":
       return "Archive";
+    case "device_trash":
+      return "Tablet Trash";
+    case "root":
+      return "My Files";
   }
 }
 
@@ -61,6 +67,10 @@ export function viewSubtitle(v: View): string {
       return "Imported EPUBs";
     case "archive":
       return "Items pending deletion · restore at any time";
+    case "device_trash":
+      return "Documents the tablet has deleted but not yet purged from device storage";
+    case "root":
+      return "Documents at the top level of your library";
   }
 }
 
@@ -95,6 +105,8 @@ export function filterDocuments(
     return docs.filter((d) => d.parent === view.id);
   }
   switch (view) {
+    case "root":
+      return docs.filter((d) => d.parent === null);
     case "all":
       return docs;
     case "recent":
@@ -109,6 +121,8 @@ export function filterDocuments(
       return docs.filter((d) => d.doc_type === "DocumentType.Epub");
     case "archive":
       return [];
+    case "device_trash":
+      return docs.filter((d) => d.parent === "trash");
   }
 }
 
@@ -154,10 +168,20 @@ export function emptyHintFor(view: View): { title: string; body: string } {
         title: "Archive is empty",
         body: "Documents you delete (here or on the tablet) land here so you can change your mind.",
       };
+    case "device_trash":
+      return {
+        title: "Tablet Trash is empty",
+        body: "Documents the tablet has soft-deleted (but not yet purged) appear here. Sync to refresh.",
+      };
     case "unsynced":
       return {
         title: "Everything is synced",
         body: "When you import or edit, items waiting to upload will appear here.",
+      };
+    case "root":
+      return {
+        title: "My Files is empty",
+        body: "Documents not inside any folder appear here.",
       };
   }
 }

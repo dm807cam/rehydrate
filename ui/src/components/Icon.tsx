@@ -30,6 +30,7 @@ type IconName =
   | "selectMode"
   | "checkbox"
   | "checkboxChecked"
+  | "checkboxIndeterminate"
   | "settings"
   | "x"
   | "wand";
@@ -228,6 +229,13 @@ export function Icon({ name, size = 14, className, ...rest }: Props) {
         <svg {...common}>
           <rect x="2.5" y="2.5" width="11" height="11" rx="2" fill="currentColor" stroke="none" />
           <path d="M5 8.5 L7.5 11 L11.5 6" stroke="white" strokeWidth="2" />
+        </svg>
+      );
+    case "checkboxIndeterminate":
+      return (
+        <svg {...common}>
+          <rect x="2.5" y="2.5" width="11" height="11" rx="2" fill="currentColor" stroke="none" />
+          <path d="M5 8 L11 8" stroke="white" strokeWidth="2" strokeLinecap="round" />
         </svg>
       );
     case "settings":

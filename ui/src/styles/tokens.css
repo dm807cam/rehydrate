@@ -1,0 +1,187 @@
+/* =====================================================================
+ * reHydrate design tokens.
+ * Spacing, type, radius, shadow, motion. Components reference these so
+ * a future redesign stays a single-file change.
+ * ===================================================================== */
+
+:root {
+  /* Surfaces */
+  --bg: #fafafa;
+  --bg-elev: #ffffff;
+  --bg-sunken: #f3f3f5;
+  --bg-overlay: rgba(15, 15, 20, 0.42);
+  --border: #e6e6ea;
+  --border-strong: #d0d0d6;
+
+  /* Text */
+  --text: #1a1a1c;
+  --muted: #74747a;
+  --muted-soft: #9a9aa2;
+
+  /* Accents */
+  --accent: #2960e6;
+  --accent-bg: #e7eefc;
+  --accent-fg: #ffffff;
+  --accent-border: rgba(41, 96, 230, 0.3);
+  --ok: #1f8050;
+  --ok-bg: #e2f3eb;
+  --warn: #b86b00;
+  --warn-bg: #fcefd6;
+  --err: #a02020;
+  --err-bg: #fdecec;
+  --err-border: #d04848;
+  --danger: #c83030;
+  --danger-bg: #fdecec;
+
+  /* Row state colours */
+  --row-hover: rgba(41, 96, 230, 0.06);
+  --row-selected: rgba(41, 96, 230, 0.12);
+  --row-zebra: #f5f5f7;
+
+  /* Sync badges */
+  --new-bg: #d8e9ff;
+  --new-fg: #2960e6;
+  --changed-bg: #fcefd6;
+  --changed-fg: #b86b00;
+  --unchanged-bg: #ececef;
+  --unchanged-fg: #6c6c74;
+  --skipped-bg: #f5d8d8;
+  --skipped-fg: #a02020;
+
+  /* Spacing */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+  --space-6: 32px;
+  --space-7: 48px;
+
+  /* Type */
+  --text-xs: 11px;
+  --text-sm: 12px;
+  --text-base: 13px;
+  --text-md: 14px;
+  --text-lg: 15px;
+  --text-xl: 17px;
+  --text-2xl: 22px;
+
+  /* Radius */
+  --radius-xs: 3px;
+  --radius-sm: 5px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+  --radius-xl: 16px;
+  --radius-pill: 999px;
+
+  /* Shadow */
+  --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.04), 0 1px 3px rgba(0, 0, 0, 0.06);
+  --shadow-2: 0 6px 16px rgba(0, 0, 0, 0.08), 0 2px 4px rgba(0, 0, 0, 0.04);
+  --shadow-3: 0 18px 40px rgba(0, 0, 0, 0.18), 0 4px 12px rgba(0, 0, 0, 0.08);
+  --shadow-pop: 0 30px 80px rgba(0, 0, 0, 0.28);
+
+  /* Motion */
+  --motion-fast: 120ms;
+  --motion-base: 200ms;
+  --motion-slow: 320ms;
+  --ease: cubic-bezier(0.2, 0.8, 0.2, 1);
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+
+  font-family: -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI",
+    system-ui, sans-serif;
+  font-size: var(--text-base);
+  color: var(--text);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #1a1a1c;
+    --bg-elev: #232327;
+    --bg-sunken: #141416;
+    --bg-overlay: rgba(0, 0, 0, 0.6);
+    --border: #2e2e34;
+    --border-strong: #3a3a42;
+    --text: #f0f0f3;
+    --muted: #9090a0;
+    --muted-soft: #6a6a78;
+    --accent: #6792f5;
+    --accent-bg: #1f2c4a;
+    --accent-border: rgba(103, 146, 245, 0.35);
+    --ok: #4dbb87;
+    --ok-bg: #1f3a2c;
+    --warn: #e5a448;
+    --warn-bg: #3a2e1a;
+    --err: #ff7a7a;
+    --err-bg: #3a1f1f;
+    --err-border: #7a3a3a;
+    --danger: #ff7a7a;
+    --danger-bg: #3a1f1f;
+    --row-hover: rgba(103, 146, 245, 0.08);
+    --row-selected: rgba(103, 146, 245, 0.18);
+    --row-zebra: #1f1f23;
+    --new-bg: #1f2c4a;
+    --new-fg: #6792f5;
+    --changed-bg: #3a2e1a;
+    --changed-fg: #e5a448;
+    --unchanged-bg: #2a2a30;
+    --unchanged-fg: #9090a0;
+    --skipped-bg: #3a1f1f;
+    --skipped-fg: #ff7a7a;
+    --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.5);
+    --shadow-2: 0 6px 16px rgba(0, 0, 0, 0.5);
+    --shadow-3: 0 18px 40px rgba(0, 0, 0, 0.65);
+    --shadow-pop: 0 30px 80px rgba(0, 0, 0, 0.85);
+  }
+}
+
+/* =====================================================================
+ * Animation primitives.
+ * Components opt-in by toggling utility classes.
+ * ===================================================================== */
+
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+@keyframes fadeOut {
+  from { opacity: 1; }
+  to   { opacity: 0; }
+}
+@keyframes slideInRight {
+  from { transform: translateX(24px); opacity: 0; }
+  to   { transform: translateX(0);    opacity: 1; }
+}
+@keyframes slideOutRight {
+  from { transform: translateX(0);    opacity: 1; }
+  to   { transform: translateX(24px); opacity: 0; }
+}
+@keyframes slideInUp {
+  from { transform: translateY(8px); opacity: 0; }
+  to   { transform: translateY(0);   opacity: 1; }
+}
+@keyframes scaleIn {
+  from { transform: scale(0.96); opacity: 0; }
+  to   { transform: scale(1);    opacity: 1; }
+}
+@keyframes pulseDot {
+  0%, 100% { transform: scale(1);   opacity: 1; }
+  50%      { transform: scale(1.4); opacity: 0.55; }
+}
+@keyframes shimmer {
+  from { background-position: -400px 0; }
+  to   { background-position: 400px 0; }
+}
+@keyframes rowEnter {
+  from { background: var(--accent-bg); }
+  to   { background: transparent; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    transition-duration: 0.001ms !important;
+  }
+}
+

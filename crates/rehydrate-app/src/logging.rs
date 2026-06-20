@@ -7,7 +7,7 @@ use std::path::PathBuf;
 use std::sync::OnceLock;
 
 use tracing_appender::non_blocking::WorkerGuard;
-use tracing_appender::rolling;
+use tracing_appender::rolling::{RollingFileAppender, Rotation};
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::{EnvFilter, Layer};
@@ -23,8 +23,27 @@ pub fn log_dir() -> Option<PathBuf> {
 }
 
 pub fn init() {
-    let env_filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new("info,rehydrate=debug"));
+    // Default filter: INFO for everything, DEBUG for our own crates so
+    // sync activity actually shows up. The previous directive
+    // `rehydrate=debug` only matched the (non-existent) `rehydrate`
+    // crate — none of our crates have that module-path, so it was a
+    // no-op and the log file held nothing but INFO-and-above events.
+    // Listing every crate explicitly is verbose but tells future
+    // readers exactly which targets are noisy.
+    let env_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| {
+        EnvFilter::new(
+            "info,\
+             rehydrate_app=debug,\
+             rehydrate_core=debug,\
+             rehydrate_sync=debug,\
+             rehydrate_device=debug,\
+             rehydrate_render=debug,\
+             rehydrate_ocr=debug,\
+             rehydrate_publish=debug,\
+             rehydrate_http=debug,\
+             rm_parser=debug",
+        )
+    });
 
     let stderr_layer = tracing_subscriber::fmt::layer()
         .with_writer(std::io::stderr)
@@ -32,9 +51,21 @@ pub fn init() {
 
     // File appender. If we can't set up the log dir, fall back to stderr-
     // only — the app is still usable, but the Logs drawer will be empty.
+    //
+    // Filename shape: `rehydrate.YYYY-MM-DD.log`. The builder API splits
+    // prefix and suffix around the rotation timestamp so the `.log`
+    // extension lands at the end, where Finder/Explorer recognise it as
+    // text. The earlier `rolling::daily(dir, "rehydrate.log")` shortcut
+    // appended the date *after* `.log`, producing `rehydrate.log.YYYY-MM-DD`
+    // — which macOS treats as having extension `.YYYY-MM-DD` (not text).
     let file_layer = log_dir().and_then(|dir| {
         std::fs::create_dir_all(&dir).ok()?;
-        let appender = rolling::daily(&dir, "rehydrate.log");
+        let appender = RollingFileAppender::builder()
+            .rotation(Rotation::DAILY)
+            .filename_prefix("rehydrate")
+            .filename_suffix("log")
+            .build(&dir)
+            .ok()?;
         let (writer, guard) = tracing_appender::non_blocking(appender);
         // Stash the guard so the appender thread isn't dropped.
         let _ = LOG_GUARD.set(guard);

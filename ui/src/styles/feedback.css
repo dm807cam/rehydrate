@@ -1,0 +1,115 @@
+/* =====================================================================
+ * Badges.
+ * ===================================================================== */
+
+.badge {
+  display: inline-block;
+  padding: 1px 8px;
+  border-radius: var(--radius-xs);
+  font-size: var(--text-xs);
+  font-weight: 500;
+  letter-spacing: 0.02em;
+}
+.badge-new       { background: var(--new-bg);       color: var(--new-fg); }
+.badge-changed   { background: var(--changed-bg);   color: var(--changed-fg); }
+.badge-unchanged { background: var(--unchanged-bg); color: var(--unchanged-fg); }
+.badge-skipped   { background: var(--skipped-bg);   color: var(--skipped-fg); }
+.badge-ok        { background: var(--ok-bg);        color: var(--ok); }
+
+/* =====================================================================
+ * Toaster.
+ * ===================================================================== */
+
+/* Anchor wrapper owns the `position: fixed`; the polite + assertive
+ * inner stacks flow vertically inside it so they stack visually
+ * instead of painting on top of each other. */
+.toaster-anchor {
+  position: fixed;
+  top: var(--space-4);
+  right: var(--space-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  z-index: 200;
+  pointer-events: none;
+}
+.toaster {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  pointer-events: none;
+}
+.toast {
+  pointer-events: auto;
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: 10px 14px;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-2);
+  min-width: 280px;
+  max-width: 420px;
+  animation: slideInRight var(--motion-base) var(--ease-out);
+}
+.toast.leaving {
+  animation: slideOutRight var(--motion-base) var(--ease) forwards;
+}
+.toast .toast-body {
+  flex: 1;
+  font-size: var(--text-sm);
+  line-height: 1.4;
+}
+.toast .toast-body strong {
+  color: var(--text);
+}
+.toast.toast-ok    { border-left: 3px solid var(--ok); }
+.toast.toast-warn  { border-left: 3px solid var(--warn); }
+.toast.toast-err   { border-left: 3px solid var(--err); }
+.toast.toast-info  { border-left: 3px solid var(--accent); }
+.toast button.toast-action {
+  font-size: var(--text-sm);
+  padding: 3px 10px;
+  background: transparent;
+  border: 1px solid var(--border-strong);
+  color: var(--text);
+}
+.toast button.toast-action:hover {
+  background: var(--row-hover);
+  border-color: var(--border-strong);
+  color: var(--text);
+}
+.toast button.close {
+  margin-left: -6px;
+}
+
+/* =====================================================================
+ * Skeleton.
+ * ===================================================================== */
+
+.skeleton {
+  display: inline-block;
+  background: linear-gradient(
+    90deg,
+    var(--bg-sunken) 0%,
+    color-mix(in srgb, var(--bg-sunken), white 4%) 50%,
+    var(--bg-sunken) 100%
+  );
+  background-size: 400px 100%;
+  animation: shimmer 1.6s linear infinite;
+  border-radius: var(--radius-xs);
+  height: 12px;
+}
+@media (prefers-color-scheme: dark) {
+  .skeleton {
+    background: linear-gradient(
+      90deg,
+      var(--bg-sunken) 0%,
+      color-mix(in srgb, var(--bg-sunken), white 8%) 50%,
+      var(--bg-sunken) 100%
+    );
+    background-size: 400px 100%;
+  }
+}
+

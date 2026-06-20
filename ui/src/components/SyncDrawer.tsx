@@ -127,7 +127,7 @@ export function SyncDrawer({ onClose, onComplete, onSyncStateChange }: Props) {
     for (const item of pushPlan.items) push[item.status]++;
     return {
       incoming: pull.new + pull.changed,
-      outgoing: push.outbound,
+      outgoing: push.outbound + pushPlan.pending_folders,
       ...pull,
       ...push,
     };
@@ -167,6 +167,11 @@ export function SyncDrawer({ onClose, onComplete, onSyncStateChange }: Props) {
   }, [pullPlan, pushPlan]);
 
   const totalActive = groups.incoming.length + groups.outgoing.length;
+  // Folder ops (create/rename/delete) are not in pushPlan.items — they
+  // are processed internally by execute_push. Count them separately so
+  // the sync button is enabled even when no documents are outbound.
+  const pendingFolders = pushPlan?.pending_folders ?? 0;
+  const hasAnythingToSync = totalActive > 0 || pendingFolders > 0;
   const completedCount = useMemo(
     () => Object.values(progress).filter((p) => p.state === "done" || p.state === "skipped").length,
     [progress],
@@ -369,9 +374,9 @@ export function SyncDrawer({ onClose, onComplete, onSyncStateChange }: Props) {
                 <button
                   className="primary start"
                   onClick={start}
-                  disabled={totalActive === 0}
+                  disabled={!hasAnythingToSync}
                 >
-                  {totalActive === 0 ? (
+                  {!hasAnythingToSync ? (
                     "Nothing to sync"
                   ) : (
                     <>
@@ -429,7 +434,7 @@ export function SyncDrawer({ onClose, onComplete, onSyncStateChange }: Props) {
             </div>
           )}
 
-          {!report && totalActive === 0 && (
+          {!report && !hasAnythingToSync && (
             <div className="empty">
               <h2>Already in sync</h2>
               <p>Nothing has changed on the tablet or in the library since the last sync.</p>

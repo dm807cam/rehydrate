@@ -14,8 +14,9 @@ pub enum Tool {
     EraseAll,
     SelectionBrush,
     Calligraphy,
+    Shader,
     /// Unrecognised tool code. Newer firmware introduces tool variants
-    /// (Shader, Paintbrush, etc.) that we don't model yet; preserving
+    /// (Paintbrush, etc.) that we don't model yet; preserving
     /// the raw value lets the renderer fall back to a generic ink stroke.
     Unknown(u32),
 }
@@ -37,6 +38,7 @@ impl TryFrom<u32> for Tool {
             0x09 => Tool::EraseAll,
             0x0a | 0x0b => Tool::SelectionBrush,
             0x15 => Tool::Calligraphy,
+            0x17 => Tool::Shader,
             other => Tool::Unknown(other),
         })
     }
