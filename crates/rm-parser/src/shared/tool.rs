@@ -14,9 +14,13 @@ pub enum Tool {
     EraseAll,
     SelectionBrush,
     Calligraphy,
+    /// reMarkable Paper Pro "shader" — a wide, translucent shading tool.
+    /// Rendered like the highlighter (constant width, ~0.39 alpha, drawn
+    /// under the ink).
+    Shader,
     /// Unrecognised tool code. Newer firmware introduces tool variants
-    /// (Shader, Paintbrush, etc.) that we don't model yet; preserving
-    /// the raw value lets the renderer fall back to a generic ink stroke.
+    /// (Paintbrush, etc.) that we don't model yet; preserving the raw
+    /// value lets the renderer fall back to a generic ink stroke.
     Unknown(u32),
 }
 
@@ -37,7 +41,25 @@ impl TryFrom<u32> for Tool {
             0x09 => Tool::EraseAll,
             0x0a | 0x0b => Tool::SelectionBrush,
             0x15 => Tool::Calligraphy,
+            0x17 => Tool::Shader,
             other => Tool::Unknown(other),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn maps_shader_tool_code() {
+        // 0x17 is the Paper Pro shader; before this it fell through to
+        // `Unknown(0x17)` and rendered as opaque generic ink.
+        assert!(matches!(Tool::try_from(0x17).unwrap(), Tool::Shader));
+    }
+
+    #[test]
+    fn preserves_unknown_tool_codes() {
+        assert!(matches!(Tool::try_from(0x99).unwrap(), Tool::Unknown(0x99)));
     }
 }
