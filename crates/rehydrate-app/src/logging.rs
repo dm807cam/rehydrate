@@ -7,7 +7,7 @@ use std::path::PathBuf;
 use std::sync::OnceLock;
 
 use tracing_appender::non_blocking::WorkerGuard;
-use tracing_appender::rolling;
+use tracing_appender::rolling::{RollingFileAppender, Rotation};
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::{EnvFilter, Layer};
@@ -34,7 +34,19 @@ pub fn init() {
     // only — the app is still usable, but the Logs drawer will be empty.
     let file_layer = log_dir().and_then(|dir| {
         std::fs::create_dir_all(&dir).ok()?;
-        let appender = rolling::daily(&dir, "rehydrate.log");
+        // Filename shape: `rehydrate.YYYY-MM-DD.log`. The builder splits the
+        // prefix and suffix around the rotation date, so the `.log` extension
+        // lands at the *end* where Finder / Explorer recognise the file as
+        // text. The `rolling::daily(dir, "rehydrate.log")` shortcut instead
+        // appends the date after the name, producing `rehydrate.log.YYYY-MM-DD`
+        // — which macOS reads as having extension `.YYYY-MM-DD`, so a
+        // double-click won't open it in a text viewer.
+        let appender = RollingFileAppender::builder()
+            .rotation(Rotation::DAILY)
+            .filename_prefix("rehydrate")
+            .filename_suffix("log")
+            .build(&dir)
+            .ok()?;
         let (writer, guard) = tracing_appender::non_blocking(appender);
         // Stash the guard so the appender thread isn't dropped.
         let _ = LOG_GUARD.set(guard);
@@ -81,8 +93,9 @@ pub fn read_tail(max_lines: usize) -> std::io::Result<Vec<String>> {
         return Ok(Vec::new());
     };
 
-    // Sort entries by filename descending — daily rotation uses YYYY-MM-DD
-    // suffixes so reverse-lex order is reverse-chronological.
+    // Sort entries by filename descending. Names are `rehydrate.YYYY-MM-DD.log`
+    // with a constant prefix and suffix, so the embedded ISO date is the only
+    // varying part and reverse-lex order is reverse-chronological.
     let mut files: Vec<PathBuf> = rd
         .flatten()
         .map(|e| e.path())
