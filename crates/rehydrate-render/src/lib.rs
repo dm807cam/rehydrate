@@ -327,7 +327,7 @@ fn render_rm_to_ops(
     // Render highlighters first so they sit underneath ink.
     let mut ordered: Vec<&Line> = lines.clone();
     ordered.sort_by_key(|l| match l.tool() {
-        Tool::Highlighter => 0,
+        Tool::Highlighter | Tool::Shader => 0,
         _ => 1,
     });
 
@@ -349,7 +349,7 @@ fn render_rm_to_ops(
         }
 
         let tool = line.tool();
-        let is_highlighter = matches!(tool, Tool::Highlighter);
+        let is_highlighter = matches!(tool, Tool::Highlighter | Tool::Shader);
 
         // Switch to the highlighter alpha state only for highlighters,
         // and only when not already there.
@@ -418,7 +418,7 @@ fn render_rm_to_ops(
         // Variable-width tools are chunked into ~5-sample groups, each
         // stroked at the chunk's mean width — same approach as rmc/rmrl.
         let chunk_size = match tool {
-            Tool::FineLiner | Tool::Marker | Tool::Highlighter => usize::MAX,
+            Tool::FineLiner | Tool::Marker | Tool::Highlighter | Tool::Shader => usize::MAX,
             _ => 5,
         };
 
@@ -632,7 +632,7 @@ fn width_pt_for(tool: &Tool, p: &RmPoint, thickness: f32) -> f32 {
         Tool::Pencil => 0.32,
         Tool::MechanicalPencil => 0.22,
         Tool::Calligraphy => 1.00,
-        Tool::Highlighter => 4.50,
+        Tool::Highlighter | Tool::Shader => 4.50,
         _ => 0.40,
     };
 
@@ -642,7 +642,7 @@ fn width_pt_for(tool: &Tool, p: &RmPoint, thickness: f32) -> f32 {
         Tool::Pencil => pressure_norm.sqrt() * 0.6 + 0.4,       // 40%..100%, gentle
         Tool::MechanicalPencil => pressure_norm * 0.3 + 0.7,    // mostly fixed
         Tool::Calligraphy => pressure_norm * 0.6 + 0.4,
-        Tool::FineLiner | Tool::Marker | Tool::Highlighter => 1.0,
+        Tool::FineLiner | Tool::Marker | Tool::Highlighter | Tool::Shader => 1.0,
         _ => 1.0,
     };
 
@@ -665,7 +665,7 @@ fn stroke_color_rgb(tool: &Tool, color: &PenColor) -> (f32, f32, f32) {
         // ≈ 0.39, matching rmrl). The classic device yellow is rgb
         // (1.0, 0.914, 0.290) — anything paler reads as washed-out
         // when laid over white through the alpha blend.
-        Tool::Highlighter => match color {
+        Tool::Highlighter | Tool::Shader => match color {
             PenColor::Yellow => (1.000, 0.914, 0.290),
             PenColor::Green => (0.482, 0.871, 0.420),
             PenColor::Pink => (0.969, 0.408, 0.671),
