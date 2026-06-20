@@ -23,8 +23,27 @@ pub fn log_dir() -> Option<PathBuf> {
 }
 
 pub fn init() {
-    let env_filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new("info,rehydrate=debug"));
+    // Default filter: INFO for everything, DEBUG for our own crates so
+    // sync activity actually shows up. The previous directive
+    // `rehydrate=debug` only matched a crate literally named `rehydrate`
+    // — none of our crates use that module path (they are `rehydrate_app`,
+    // `rehydrate_core`, …), so the directive was a no-op and the log held
+    // nothing but INFO-and-above. Listing every crate explicitly is verbose
+    // but tells future readers exactly which targets are noisy.
+    let env_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| {
+        EnvFilter::new(
+            "info,\
+             rehydrate_app=debug,\
+             rehydrate_core=debug,\
+             rehydrate_sync=debug,\
+             rehydrate_device=debug,\
+             rehydrate_render=debug,\
+             rehydrate_ocr=debug,\
+             rehydrate_publish=debug,\
+             rehydrate_http=debug,\
+             rm_parser=debug",
+        )
+    });
 
     let stderr_layer = tracing_subscriber::fmt::layer()
         .with_writer(std::io::stderr)
