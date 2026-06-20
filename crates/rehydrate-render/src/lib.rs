@@ -696,6 +696,18 @@ fn pen_color_rgb(color: &PenColor) -> (f32, f32, f32) {
         PenColor::Pink => (0.94, 0.42, 0.65),
         PenColor::Blue => (0.00, 0.40, 0.85),
         PenColor::Red => (0.85, 0.15, 0.15),
+        // reMarkable Paper Pro palette additions (codes 9..=13). Saturated
+        // export tints in the same spirit as the RM2 colours above — the
+        // device's on-eink rendering is far more muted, but the official PDF
+        // export uses vivid ink, so we match that. Without these, Green2
+        // (a common pen) fell through to `Unknown` and rendered black.
+        PenColor::Green2 => (0.13, 0.60, 0.27),
+        PenColor::Cyan => (0.00, 0.62, 0.80),
+        PenColor::Magenta => (0.80, 0.15, 0.55),
+        PenColor::Yellow2 => (0.95, 0.82, 0.00),
+        // A bare `Highlight` colour outside the highlighter tool is rare;
+        // fall back to the classic highlighter yellow.
+        PenColor::Highlight => (1.00, 0.85, 0.00),
         PenColor::Unknown(_) => (0.00, 0.00, 0.00),
     }
 }
