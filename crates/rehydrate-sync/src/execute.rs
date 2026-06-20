@@ -70,6 +70,10 @@ pub async fn execute_pull(
     let mut unchanged = 0usize;
     let mut skipped = 0usize;
 
+    // Documents the user purged locally that still need to be removed from
+    // the tablet. Loaded once so we don't query SQLite per device entry.
+    let deletion_queue = library.list_device_deletion_queue().unwrap_or_default();
+
     for item in plan.items {
         if cancel.is_cancelled() {
             if let Some(p) = &progress {
@@ -98,6 +102,31 @@ pub async fn execute_pull(
                         .await;
                 }
             }
+            continue;
+        }
+
+        // Documents the user purged locally while the tablet was unreachable.
+        // Delete them from the device now rather than re-downloading them.
+        if deletion_queue.contains(&item.entry.uuid) {
+            match device.delete_document_tree(&item.entry.uuid).await {
+                Ok(()) => tracing::info!(
+                    uuid = %item.entry.uuid,
+                    "deleted purged document from device"
+                ),
+                Err(e) => {
+                    // Not fatal — the queue entry stays and we retry next sync.
+                    tracing::warn!(
+                        uuid = %item.entry.uuid,
+                        error = %e,
+                        "failed to delete purged document from device (will retry)"
+                    );
+                }
+            }
+            // Dequeue: on success the file is gone; on "not found" it was
+            // already absent. A transient error keeps the entry, but leaving
+            // it doesn't break anything — the next pull redoes this.
+            let _ = library.dequeue_device_deletion(&item.entry.uuid);
+            skipped += 1;
             continue;
         }
 

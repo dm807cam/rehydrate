@@ -41,6 +41,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "0007_folder_revert_state",
         include_str!("../migrations/0007_folder_revert_state.sql"),
     ),
+    (
+        "0008_device_deletion_queue",
+        include_str!("../migrations/0008_device_deletion_queue.sql"),
+    ),
 ];
 
 pub struct Db {
