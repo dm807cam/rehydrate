@@ -23,8 +23,27 @@ pub fn log_dir() -> Option<PathBuf> {
 }
 
 pub fn init() {
-    let env_filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new("info,rehydrate=debug"));
+    // Default filter: INFO globally, DEBUG for our own crates so sync
+    // activity actually reaches the log file. The previous single
+    // directive `rehydrate=debug` relied on prefix-matching our crate
+    // names, but every workspace crate's module path is `rehydrate_app`,
+    // `rehydrate_core`, … (underscored), not `rehydrate` — so in practice
+    // it left the file effectively INFO-only. Listing each target
+    // explicitly is verbose but unambiguous and self-documenting.
+    let env_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| {
+        EnvFilter::new(
+            "info,\
+             rehydrate_app=debug,\
+             rehydrate_core=debug,\
+             rehydrate_sync=debug,\
+             rehydrate_device=debug,\
+             rehydrate_render=debug,\
+             rehydrate_ocr=debug,\
+             rehydrate_publish=debug,\
+             rehydrate_http=debug,\
+             rm_parser=debug",
+        )
+    });
 
     let stderr_layer = tracing_subscriber::fmt::layer()
         .with_writer(std::io::stderr)
