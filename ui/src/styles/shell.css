@@ -1,0 +1,102 @@
+/* =====================================================================
+ * Base.
+ * ===================================================================== */
+
+* {
+  box-sizing: border-box;
+}
+html, body, #root {
+  margin: 0;
+  padding: 0;
+  height: 100vh;
+  background: var(--bg);
+  color: var(--text);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+button,
+input,
+select,
+textarea {
+  font-family: inherit;
+}
+
+*:focus {
+  outline: none;
+}
+*:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: var(--radius-xs);
+}
+
+/* =====================================================================
+ * App shell.
+ * ===================================================================== */
+
+.app {
+  display: grid;
+  grid-template-rows: 48px 1fr 26px;
+  height: 100vh;
+}
+
+.toolbar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  /* Leading pad varies by platform — macOS needs ~70px to clear the
+   * traffic lights, every other OS just wants a normal gutter. The
+   * value is set on :root from main.tsx based on the user agent. */
+  padding: 0 var(--space-3) 0 var(--toolbar-pad-left, 12px);
+  background: var(--bg-elev);
+  border-bottom: 1px solid var(--border);
+  -webkit-app-region: drag; /* whole bar draggable; buttons override */
+}
+.toolbar > button,
+.toolbar .pill,
+.toolbar .toolbar-menu,
+.toolbar .brand {
+  -webkit-app-region: no-drag;
+}
+
+.brand {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-weight: 600;
+  font-size: var(--text-md);
+  letter-spacing: -0.01em;
+  user-select: none;
+}
+.brand-mark {
+  /* logo.png is on a 1024 grid with the squircle taking ~80%
+   * (Apple's icon-grid spec); 28 px element ⇒ ~22 px visible squircle
+   * — matches the previous brand-mark size optically. */
+  width: 28px;
+  height: 28px;
+  object-fit: contain;
+  display: inline-block;
+  /* drop-shadow follows the PNG's alpha so the halo traces the
+   * squircle instead of the surrounding transparent box. */
+  filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.18));
+}
+
+.spacer { flex: 1; }
+
+/* Library switcher trigger inherits the regular toolbar button
+ * style; only the label needs ellipsis treatment so a long library
+ * name doesn't blow out the toolbar width. */
+.library-switcher__label {
+  display: inline-block;
+  max-width: 160px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  vertical-align: middle;
+}
+
+.muted.small {
+  font-size: var(--text-xs);
+}
+

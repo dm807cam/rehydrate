@@ -1,0 +1,191 @@
+/* =====================================================================
+ * Sync drawer rebuild — hero summary + per-row progress.
+ * ===================================================================== */
+
+.sync-hero {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-4) var(--space-5);
+  border-bottom: 1px solid var(--border);
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--accent-bg) 50%, var(--bg-elev)) 0%,
+    var(--bg-elev) 100%
+  );
+}
+.sync-hero .nums {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-4);
+  align-items: baseline;
+}
+.sync-hero .num {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: var(--text-2xl);
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  font-variant-numeric: tabular-nums;
+}
+.sync-hero .num .icon-svg {
+  width: 18px;
+  height: 18px;
+  color: var(--accent);
+}
+.sync-hero .num.idle .icon-svg { color: var(--muted-soft); }
+.sync-hero .num small {
+  font-size: var(--text-sm);
+  font-weight: 400;
+  color: var(--muted);
+  letter-spacing: 0;
+}
+.sync-hero .start {
+  font-size: var(--text-md);
+  padding: 8px 16px;
+  border-radius: var(--radius-md);
+}
+
+.sync-section {
+  padding: var(--space-3) var(--space-5) var(--space-1);
+  font-size: var(--text-xs);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  border-top: 1px solid var(--border);
+}
+.sync-section:first-of-type { border-top: none; }
+
+.sync-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 8px var(--space-5);
+  position: relative;
+}
+.sync-row.in-progress {
+  background: var(--row-hover);
+}
+.sync-row.done {
+  opacity: 0.7;
+}
+.sync-row .title {
+  flex: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.sync-row .progress-bar {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  height: 2px;
+  background: var(--accent);
+  transition: width var(--motion-base) var(--ease);
+}
+.sync-row .icon-done {
+  color: var(--ok);
+}
+.sync-row .icon-skip {
+  color: var(--warn);
+}
+
+.global-progress {
+  height: 3px;
+  background: var(--bg-sunken);
+  border-top: 1px solid var(--border);
+  position: relative;
+  overflow: hidden;
+}
+.global-progress > span {
+  position: absolute;
+  inset: 0 auto 0 0;
+  background: var(--accent);
+  transition: width var(--motion-base) var(--ease);
+}
+.global-progress > span.indeterminate {
+  width: 30% !important;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    var(--accent),
+    transparent
+  );
+  animation: shimmer 1.4s linear infinite;
+}
+
+.success-card {
+  margin: var(--space-4) var(--space-5);
+  padding: var(--space-4);
+  border: 1px solid var(--ok);
+  background: var(--ok-bg);
+  border-radius: var(--radius-md);
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  animation: scaleIn var(--motion-base) var(--ease);
+}
+.success-card .icon-svg {
+  width: 28px;
+  height: 28px;
+  color: var(--ok);
+  flex: none;
+}
+.success-card .body {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.success-card .body strong {
+  font-size: var(--text-md);
+  color: var(--text);
+}
+.success-card .body span {
+  color: var(--muted);
+}
+
+.warning-card {
+  margin: var(--space-4) var(--space-5);
+  padding: var(--space-4);
+  border: 1px solid var(--warn);
+  background: var(--warn-bg);
+  border-radius: var(--radius-md);
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-3);
+  animation: scaleIn var(--motion-base) var(--ease);
+}
+.warning-card .icon-svg {
+  width: 22px;
+  height: 22px;
+  color: var(--warn);
+  flex: none;
+  margin-top: 2px;
+}
+.warning-card .body {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+.warning-card .body strong {
+  font-size: var(--text-md);
+  color: var(--text);
+}
+.warning-card .body ul {
+  margin: 0;
+  padding-left: var(--space-3);
+  color: var(--muted);
+  line-height: 1.5;
+}
+.warning-card .body li + li {
+  margin-top: var(--space-1);
+}
+

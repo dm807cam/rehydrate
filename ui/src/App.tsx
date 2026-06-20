@@ -1,11 +1,11 @@
 import {
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
   type DragEvent as ReactDragEvent,
-  type ReactNode,
 } from "react";
 import {
   ipc,
@@ -13,6 +13,7 @@ import {
   onHostKeyWarning,
   onKeyringWarning,
   onLegacyFormatWarning,
+  onExportProgress,
 } from "./ipc";
 import { HistoryDrawer } from "./components/HistoryDrawer";
 import { LogDrawer } from "./components/LogDrawer";
@@ -22,10 +23,10 @@ import { SyncDrawer } from "./components/SyncDrawer";
 import { Icon } from "./components/Icon";
 import { LibrarySwitcher } from "./components/LibrarySwitcher";
 import { Menu } from "./components/Menu";
-import { Skeleton } from "./components/Skeleton";
 import { useToast } from "./components/Toast";
 import { useConfirm } from "./components/Confirm";
 import { AboutDialog } from "./components/AboutDialog";
+import { ExportOptionsDialog } from "./components/ExportOptionsDialog";
 import { Cheatsheet } from "./components/Cheatsheet";
 import { SettingsModal } from "./components/SettingsModal";
 import { TranscriptDrawer } from "./components/TranscriptDrawer";
@@ -36,19 +37,20 @@ import { QuickLook } from "./components/QuickLook";
 import { RenameDialog } from "./components/RenameDialog";
 import { NamePrompt } from "./components/NamePrompt";
 import { ChooseFolderDialog } from "./components/ChooseFolderDialog";
-import { Thumbnail, invalidateThumbnail } from "./components/Thumbnail";
-import { DRAG_ICON_SVG, setCustomDragImage } from "./dragImage";
+import { invalidateThumbnail } from "./components/Thumbnail";
 import {
-  activeFolderDragIdSnapshot,
-  clearActiveFolderDrag,
+  ArchiveList,
+  DocumentGrid,
+  DocumentList,
+  DocumentListSkeleton,
+  FolderTree,
+  SidebarItem,
+  WelcomeEmpty,
+  formatBytes,
+  prettyType,
+} from "./components/AppSubviews";
+import {
   computeReorderSortIndex,
-  descendantIds,
-  hasDocumentDragData,
-  hasFolderDragData,
-  readDocumentDragData,
-  readFolderDragData,
-  setDocumentDragData,
-  setFolderDragData,
   startNativeExportDrag,
 } from "./drag";
 import { formatError } from "./formatError";
@@ -56,6 +58,7 @@ import type {
   ArchivedDocument,
   DocumentSummary,
   FolderEntry,
+  ExportProgressEvent,
 } from "./types";
 import { useDeviceSync } from "./hooks/useDeviceSync";
 import { useLibrary } from "./hooks/useLibrary";
@@ -73,7 +76,6 @@ import {
   summaryHealth,
   unsyncedCount,
   type View,
-  viewKey,
   viewSubtitle,
   viewTitle,
 } from "./views";
@@ -120,7 +122,15 @@ export function App() {
   const [historyDoc, setHistoryDoc] = useState<DocumentSummary | null>(null);
   const [showLogs, setShowLogs] = useState(false);
   const [view, setView] = useState<View>(() => loadPersistedView());
-  const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  const [expanded, setExpanded] = useState<Set<string>>(() => {
+    try {
+      const raw = window.localStorage.getItem("rh.expanded");
+      if (raw) return new Set<string>(JSON.parse(raw) as string[]);
+    } catch {
+      // Ignore parse / security errors and start collapsed.
+    }
+    return new Set<string>();
+  });
   // Selection + keyboard-focus state lives in `useSelection` —
   // see `./hooks/useSelection.ts` for the rationale and the
   // selection/focus duality.
@@ -184,6 +194,9 @@ export function App() {
   const [transcriptDoc, setTranscriptDoc] = useState<DocumentSummary | null>(
     null,
   );
+  const [exportProgress, setExportProgress] = useState<ExportProgressEvent | null>(null);
+  const [exportOptionsTarget, setExportOptionsTarget] = useState<{ folderId: string | null; selectedIds?: string[] } | null>(null);
+
   // OCR + auto-OCR sweep state, listener, and the start/dismiss
   // actions live in the `useOcr` hook (see `./hooks/useOcr.ts`).
   // It's instantiated below, after `refreshLibrary` is defined.
@@ -192,8 +205,29 @@ export function App() {
   // doesn't re-fire the sweep for the same library.
   const autoOcrInitialised = useRef<string | null>(null);
   const searchInputRef = useRef<HTMLInputElement | null>(null);
+  // Ref to the sticky `.content-top` div so we can measure its height
+  // and set it as a CSS variable — that value drives `.docs thead th`
+  // sticky positioning so column headers pin just below the toolbar.
+  const contentTopRef = useRef<HTMLDivElement | null>(null);
   const toast = useToast();
   const confirm = useConfirm();
+
+  // Keep `--content-top-h` in sync with the actual rendered height of
+  // the sticky toolbar. The var is set on the `.content` parent (common
+  // ancestor of both `.content-top` and `.docs thead`) so it cascades
+  // correctly to `.docs thead th { top: var(--content-top-h) }`.
+  useLayoutEffect(() => {
+    const el = contentTopRef.current;
+    if (!el) return;
+    const obs = new ResizeObserver(() => {
+      (el.parentElement ?? el).style.setProperty(
+        "--content-top-h",
+        `${el.offsetHeight}px`,
+      );
+    });
+    obs.observe(el);
+    return () => obs.disconnect();
+  }, []);
 
   // ---- Initial load -----------------------------------------------------
   useEffect(() => {
@@ -293,10 +327,6 @@ export function App() {
     };
   }, [toast]);
 
-  // ---- Legacy notebook format warning ----------------------------------
-  // Emitted when an older v3/v5 .rm file falls back to the thumbnail
-  // preview path. The viewer still opens; we just want the user to
-  // understand why the result looks fuzzy.
   useEffect(() => {
     // Issue #37: see the keyring-warning effect above for the
     // unmount-before-resolve race this `cancelled` flag closes.
@@ -313,6 +343,22 @@ export function App() {
       unlisten?.();
     };
   }, [toast]);
+
+  // ---- Export progress -------------------------------------------------
+  useEffect(() => {
+    let cancelled = false;
+    let unlisten: (() => void) | undefined;
+    onExportProgress((ev) => {
+      setExportProgress(ev);
+    }).then((u) => {
+      if (cancelled) u();
+      else unlisten = u;
+    });
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
+  }, []);
 
   // `refreshLibrary` and `refreshRecentLibraries` are provided by
   // `useLibrary` (destructured at the top of this component).
@@ -420,6 +466,13 @@ export function App() {
   useEffect(() => {
     persistViewMode(viewMode);
   }, [viewMode]);
+  useEffect(() => {
+    try {
+      window.localStorage.setItem("rh.expanded", JSON.stringify([...expanded]));
+    } catch {
+      // Ignore write failures (private mode, storage quota).
+    }
+  }, [expanded]);
 
   // `tryConnect` / `disconnect` / `submitPassword` are provided by
   // `useDeviceSync` (destructured at the top of this component).
@@ -541,6 +594,41 @@ export function App() {
           ),
         });
       }
+    } catch (e) {
+      setError(formatError(e));
+    }
+  }
+
+  async function purgeDeviceTrash() {
+    if (!device?.connected) {
+      toast.show({ tone: "warn", body: "Connect to a tablet first." });
+      return;
+    }
+    const ok = await confirm({
+      title: "Empty tablet Trash?",
+      body: (
+        <>
+          <p>
+            Permanently deletes documents the tablet has moved to its Trash.
+            This cannot be undone from the tablet's own UI — the files are
+            removed from the device filesystem entirely.
+          </p>
+        </>
+      ),
+      confirmLabel: "Empty Trash",
+    });
+    if (!ok) return;
+    setError(null);
+    try {
+      const count = await ipc.purgeDeviceTrash();
+      await refreshLibrary();
+      toast.show({
+        tone: "ok",
+        body:
+          count === 0
+            ? "Tablet Trash was already empty."
+            : `Removed ${count} deleted document${count === 1 ? "" : "s"} from tablet.`,
+      });
     } catch (e) {
       setError(formatError(e));
     }
@@ -965,29 +1053,68 @@ export function App() {
   const isExternalFileDrag = (e: ReactDragEvent) =>
     Array.from(e.dataTransfer.types).includes("Files");
 
-  async function handleExternalFileDrop(files: File[]) {
+  function handleExportLibrary(rootFolderId: string | null = null) {
+    setExportOptionsTarget({ folderId: rootFolderId });
+  }
+
+  async function submitExport(includeAnnotations: boolean, keepDeleted: boolean) {
+    if (!exportOptionsTarget) return;
+    const { folderId: rootFolderId, selectedIds } = exportOptionsTarget;
+    setExportOptionsTarget(null);
+    try {
+      const picked = await ipc.pickExportDirectory();
+      if (picked) {
+        setExportProgress({ current: 0, total: 1, current_file: "Preparing..." });
+        const res = selectedIds
+          ? await ipc.exportSelectedAsPdfs(picked, selectedIds, includeAnnotations)
+          : await ipc.exportAsPdfs(picked, rootFolderId, includeAnnotations, keepDeleted);
+        toast.show({
+          tone: "ok",
+          body: `Exported ${res.exported} files. (Skipped ${res.skipped} unchanged, deleted ${res.deleted}).`,
+        });
+      }
+    } catch (e) {
+      toast.show({ tone: "err", body: formatError(e) });
+    } finally {
+      setExportProgress(null);
+    }
+  }
+
+  // Extensions the backend will accept directly or convert to PDF on-the-fly.
+  // Keep in sync with CONVERTIBLE_IMAGE_EXTS / CONVERTIBLE_DOC_EXTS in commands.rs.
+  const IMPORTABLE_EXTS = [
+    ".pdf", ".epub",
+    ".png", ".jpg", ".jpeg", ".gif", ".bmp", ".tiff", ".tif", ".webp",
+    ".docx", ".doc", ".odt", ".rtf",
+  ];
+
+  async function handleExternalFileDrop(files: File[], folderId?: string | null) {
     if (!libraryOpen) {
       toast.show({
         tone: "warn",
-        body: "Open a library first, then drop PDFs or EPUBs here to import.",
+        body: "Open a library first, then drop files here to import.",
       });
       return;
     }
     const importable = files.filter((f) => {
       const lower = f.name.toLowerCase();
-      return lower.endsWith(".pdf") || lower.endsWith(".epub");
+      return IMPORTABLE_EXTS.some((ext) => lower.endsWith(ext));
     });
     if (importable.length === 0) {
       toast.show({
         tone: "warn",
-        body: "Only PDF and EPUB files can be imported.",
+        body: "Supported formats: PDF, EPUB, images (PNG, JPEG, GIF, BMP, TIFF, WEBP), and documents (DOCX, DOC, ODT, RTF).",
       });
       return;
     }
     setImportingDrop(true);
     let imported = 0;
+    let converted = 0;
     let failed = 0;
     for (const file of importable) {
+      const lower = file.name.toLowerCase();
+      const isConverted =
+        !lower.endsWith(".pdf") && !lower.endsWith(".epub");
       // Preflight on `file.size` BEFORE `arrayBuffer()`. Without this
       // guard a 500 MB drop would allocate the full Uint8Array in the
       // renderer plus ~4× that in the JSON-IPC encoder before the
@@ -1006,8 +1133,9 @@ export function App() {
       }
       try {
         const buf = await file.arrayBuffer();
-        await ipc.importDroppedFile(file.name, new Uint8Array(buf));
+        await ipc.importDroppedFile(file.name, new Uint8Array(buf), folderId);
         imported += 1;
+        if (isConverted) converted += 1;
       } catch (e) {
         failed += 1;
         // Report each failure but keep going so a single bad file
@@ -1021,12 +1149,16 @@ export function App() {
     setImportingDrop(false);
     if (imported > 0) {
       await refreshLibrary();
+      const convertedNote =
+        converted > 0
+          ? ` (${converted === 1 ? "1 file converted to PDF" : `${converted} files converted to PDF`})`
+          : "";
       toast.show({
         tone: "ok",
         body:
           imported === 1
-            ? "Imported 1 file. It will sync to the tablet on the next sync."
-            : `Imported ${imported} files. They will sync on the next sync.`,
+            ? `Imported 1 file${convertedNote}. It will sync to the tablet on the next sync.`
+            : `Imported ${imported} files${convertedNote}. They will sync on the next sync.`,
       });
     }
     if (failed > 0 && imported === 0) {
@@ -1162,28 +1294,41 @@ export function App() {
     }
   }
 
-  async function restoreFromArchive(d: ArchivedDocument) {
+  async function restoreFromArchive(docs: ArchivedDocument[]) {
+    if (docs.length === 0) return;
     setError(null);
     try {
-      await ipc.unarchiveDocument(d.document_id);
+      for (const d of docs) {
+        await ipc.unarchiveDocument(d.document_id);
+      }
       await refreshLibrary();
       toast.show({
         tone: "ok",
-        body: (
-          <span>
-            Restored <strong>{d.visible_name}</strong>. It re-appears on the
-            tablet on next sync.
-          </span>
-        ),
+        body:
+          docs.length === 1 ? (
+            <span>
+              Restored <strong>{docs[0].visible_name}</strong>. It re-appears on
+              the tablet on next sync.
+            </span>
+          ) : (
+            <span>
+              Restored <strong>{docs.length} documents</strong>. They re-appear
+              on the tablet on next sync.
+            </span>
+          ),
       });
     } catch (e) {
       setError(formatError(e));
     }
   }
 
-  async function purgeFromArchive(d: ArchivedDocument) {
+  async function purgeFromArchive(docs: ArchivedDocument[]) {
+    if (docs.length === 0) return;
     const ok = await confirm({
-      title: `Delete "${d.visible_name}" forever?`,
+      title:
+        docs.length === 1
+          ? `Delete "${docs[0].visible_name}" forever?`
+          : `Delete ${docs.length} documents forever?`,
       body: "Every saved version will be dropped. This cannot be undone.",
       confirmLabel: "Delete forever",
       destructive: true,
@@ -1191,15 +1336,20 @@ export function App() {
     if (!ok) return;
     setError(null);
     try {
-      await ipc.purgeArchivedDocument(d.document_id);
+      for (const d of docs) {
+        await ipc.purgeArchivedDocument(d.document_id);
+      }
       await refreshLibrary();
       toast.show({
         tone: "ok",
-        body: (
-          <span>
-            Permanently removed <strong>{d.visible_name}</strong>.
-          </span>
-        ),
+        body:
+          docs.length === 1 ? (
+            <span>
+              Permanently removed <strong>{docs[0].visible_name}</strong>.
+            </span>
+          ) : (
+            <span>Permanently removed {docs.length} documents.</span>
+          ),
       });
     } catch (e) {
       setError(formatError(e));
@@ -1258,6 +1408,22 @@ export function App() {
         tag: "Action",
         keywords: "garbage collect orphans gc",
         onRun: garbageCollect,
+      },
+      {
+        id: "act-purge-tablet-trash",
+        label: "Empty tablet Trash",
+        icon: <Icon name="trash" />,
+        tag: "Action",
+        keywords: "tablet device trash purge deleted clean",
+        onRun: purgeDeviceTrash,
+      },
+      {
+        id: "act-export-pdfs",
+        label: "Export Library to PDFs…",
+        icon: <Icon name="arrowUp" />,
+        tag: "Action",
+        keywords: "export save pdf backup",
+        onRun: () => handleExportLibrary(null),
       },
       {
         id: "act-logs",
@@ -1559,6 +1725,9 @@ export function App() {
             >
               <Icon name="restore" /> Revert
             </button>
+            <button onClick={() => handleExportLibrary(null)} title="Export Library to PDFs (⌥-drag single items)">
+              <Icon name="arrowUp" /> Export All
+            </button>
             <button
               onClick={openSync}
               disabled={!device?.connected}
@@ -1684,6 +1853,18 @@ export function App() {
                   +
                 </button>
               </div>
+              <ul>
+                <SidebarItem
+                  label="My Files"
+                  icon={<Icon name="library" />}
+                  v="root"
+                  view={view}
+                  setView={setView}
+                  count={documents ? documents.filter((d) => d.parent === null).length : 0}
+                  dropTarget={null}
+                  onDocumentDrop={handleDocumentDrop}
+                />
+              </ul>
               {folders.length > 0 && documents ? (
                 <FolderTree
                   folders={folders}
@@ -1693,7 +1874,9 @@ export function App() {
                   expanded={expanded}
                   setExpanded={setExpanded}
                   onDocumentDrop={handleDocumentDrop}
+                  onExternalFileDrop={handleExternalFileDrop}
                   onRenameFolder={startRenameFolder}
+                  onExportFolder={(f) => handleExportLibrary(f.folder_id)}
                   onCreateSubfolder={(parentId) => startCreateFolder(parentId)}
                   onDeleteFolder={startDeleteFolder}
                   onReorderFolder={(draggedId, newParent, beforeId, afterId) => {
@@ -1727,6 +1910,16 @@ export function App() {
                 setView={setView}
                 count={archived.length}
                 dropTarget="archive"
+                onDocumentDrop={handleDocumentDrop}
+              />
+              <SidebarItem
+                label="Tablet Trash"
+                icon={<Icon name="tablet" />}
+                v="device_trash"
+                view={view}
+                setView={setView}
+                count={documents ? documents.filter((d) => d.parent === "trash").length : 0}
+                dropTarget={null}
                 onDocumentDrop={handleDocumentDrop}
               />
             </ul>
@@ -1778,103 +1971,137 @@ export function App() {
             <WelcomeEmpty defaultPath={defaultPath} onOpen={openLibrary} />
           ) : (
             <>
-              <div className="content-header">
-                <h1>{viewTitle(view, folders)}</h1>
-                <span className="crumbs">{viewSubtitle(view)}</span>
-                <div className="spacer" />
-                {showSearch && view !== "archive" && (
-                  <span className="search-bar">
-                    <Icon name="search" />
-                    <input
-                      ref={searchInputRef}
-                      type="search"
-                      aria-label="Search this view"
-                      placeholder="Search this view…"
-                      value={search}
-                      onChange={(e) => setSearch(e.target.value)}
-                      onBlur={() => {
-                        // Collapse back to the magnifier glyph when the
-                        // user clicks away with nothing typed.
-                        if (!search) setShowSearch(false);
-                      }}
-                      onKeyDown={(e) => {
-                        if (e.key === "Escape") {
-                          if (search) setSearch("");
-                          else {
-                            setShowSearch(false);
-                            (e.target as HTMLInputElement).blur();
-                          }
-                        }
-                      }}
-                      autoFocus
-                    />
-                    {search && (
+              <div className="content-top" ref={contentTopRef}>
+                <div className="content-header">
+                  <h1>{viewTitle(view, folders)}</h1>
+                  <span className="crumbs">{viewSubtitle(view)}</span>
+                  <div className="spacer" />
+                  {(view === "archive" || view === "device_trash") && (
+                    <button
+                      type="button"
+                      className="icon ghost"
+                      aria-label="Refresh"
+                      title="Refresh list"
+                      onClick={() => { void refreshLibrary(); }}
+                    >
+                      <Icon name="sync" />
+                    </button>
+                  )}
+                  {view === "device_trash" &&
+                    documents &&
+                    documents.some((d) => d.parent === "trash") && (
                       <button
-                        className="clear"
-                        aria-label="Clear search"
-                        onClick={() => setSearch("")}
+                        type="button"
+                        className="danger"
+                        onClick={purgeDeviceTrash}
+                        title="Hard-delete every document the tablet has trashed. The local entries are archived on the next sync."
                       >
-                        ×
+                        <Icon name="trash" /> Empty Tablet Trash…
                       </button>
                     )}
-                  </span>
-                )}
-                {!showSearch && view !== "archive" && (
-                  <button
-                    className="icon ghost"
-                    aria-label="Search (⌘F)"
-                    title="Search (⌘F)"
-                    onClick={() => setShowSearch(true)}
-                  >
-                    <Icon name="search" />
-                  </button>
-                )}
-                {view !== "archive" && (
-                  <button
-                    className={`icon ghost${selectMode ? " active" : ""}`}
-                    aria-label={selectMode ? "Done selecting" : "Select"}
-                    title={selectMode ? "Exit select mode" : "Select multiple"}
-                    onClick={toggleSelectMode}
-                  >
-                    <Icon name="selectMode" />
-                  </button>
-                )}
-                {view !== "archive" && (
-                  <span className="view-switch" role="tablist" aria-label="View mode">
+                  {showSearch && view !== "archive" && (
+                    <span className="search-bar">
+                      <Icon name="search" />
+                      <input
+                        ref={searchInputRef}
+                        type="search"
+                        aria-label="Search this view"
+                        placeholder="Search this view…"
+                        value={search}
+                        onChange={(e) => setSearch(e.target.value)}
+                        onBlur={() => {
+                          // Collapse back to the magnifier glyph when the
+                          // user clicks away with nothing typed.
+                          if (!search) setShowSearch(false);
+                        }}
+                        onKeyDown={(e) => {
+                          if (e.key === "Escape") {
+                            if (search) setSearch("");
+                            else {
+                              setShowSearch(false);
+                              (e.target as HTMLInputElement).blur();
+                            }
+                          }
+                        }}
+                        autoFocus
+                      />
+                      {search && (
+                        <button
+                          className="clear"
+                          aria-label="Clear search"
+                          onClick={() => setSearch("")}
+                        >
+                          ×
+                        </button>
+                      )}
+                    </span>
+                  )}
+                  {!showSearch && view !== "archive" && (
                     <button
-                      className={viewMode === "list" ? "active" : ""}
-                      title="List view"
-                      aria-label="List view"
-                      onClick={() => setViewMode("list")}
+                      className="icon ghost"
+                      aria-label="Search (⌘F)"
+                      title="Search (⌘F)"
+                      onClick={() => setShowSearch(true)}
                     >
-                      <Icon name="library" />
+                      <Icon name="search" />
                     </button>
+                  )}
+                  {view !== "archive" && (
                     <button
-                      className={viewMode === "grid" ? "active" : ""}
-                      title="Grid view"
-                      aria-label="Grid view"
-                      onClick={() => setViewMode("grid")}
+                      className={`icon ghost${selectMode ? " active" : ""}`}
+                      aria-label={selectMode ? "Done selecting" : "Select"}
+                      title={selectMode ? "Exit select mode" : "Select multiple"}
+                      onClick={toggleSelectMode}
                     >
-                      <Icon name="folder" />
+                      <Icon name="selectMode" />
                     </button>
-                  </span>
+                  )}
+                  {view !== "archive" && (
+                    <span className="view-switch" role="tablist" aria-label="View mode">
+                      <button
+                        className={viewMode === "list" ? "active" : ""}
+                        title="List view"
+                        aria-label="List view"
+                        onClick={() => setViewMode("list")}
+                      >
+                        <Icon name="library" />
+                      </button>
+                      <button
+                        className={viewMode === "grid" ? "active" : ""}
+                        title="Grid view"
+                        aria-label="Grid view"
+                        onClick={() => setViewMode("grid")}
+                      >
+                        <Icon name="folder" />
+                      </button>
+                    </span>
+                  )}
+                </div>
+                {selectedIds.size > 0 && view !== "archive" && (
+                  <div className="selection-bar">
+                    <span>
+                      <strong>{selectedIds.size}</strong> selected
+                    </span>
+                    <div className="spacer" />
+                    <button
+                      type="button"
+                      onClick={(e) => { e.preventDefault(); setSelectedIds(new Set(filteredDocs.map((d) => d.document_id))); }}
+                    >
+                      Select all
+                    </button>
+                    <button type="button" onClick={(e) => { e.preventDefault(); clearSelection(); }}>Clear</button>
+                    <button type="button" onClick={() => startMoveDocs([...selectedIds])}>
+                      <Icon name="folder" /> Move to folder…
+                    </button>
+                    <button type="button" onClick={() => setExportOptionsTarget({ folderId: null, selectedIds: [...selectedIds] })}>
+                      <Icon name="arrowUp" /> Export…
+                    </button>
+                    <button type="button" className="danger" onClick={bulkArchive}>
+                      <Icon name="trash" /> Archive
+                    </button>
+                  </div>
                 )}
               </div>
-              {selectedIds.size > 0 && view !== "archive" && (
-                <div className="selection-bar">
-                  <span>
-                    <strong>{selectedIds.size}</strong> selected
-                  </span>
-                  <div className="spacer" />
-                  <button onClick={clearSelection}>Clear</button>
-                  <button onClick={() => startMoveDocs([...selectedIds])}>
-                    <Icon name="folder" /> Move to folder…
-                  </button>
-                  <button className="danger" onClick={bulkArchive}>
-                    <Icon name="trash" /> Archive
-                  </button>
-                </div>
-              )}
               {view === "archive" ? (
                 <ArchiveList
                   archived={archived}
@@ -1908,7 +2135,7 @@ export function App() {
                   selectedIds={selectedIds}
                   selectMode={selectMode}
                   focusId={focusId}
-                  onClickRow={(d, e) => handleRowClick(d, filteredDocs, e)}
+                  onClickRow={(d, list, e) => handleRowClick(d, list, e)}
                   onOpenInViewer={openInViewer}
                   onRename={startRenameDocument}
                   onArchive={archiveOne}
@@ -1927,7 +2154,8 @@ export function App() {
                   selectedIds={selectedIds}
                   selectMode={selectMode}
                   focusId={focusId}
-                  onClickRow={(d, e) => handleRowClick(d, filteredDocs, e)}
+                  onClickRow={(d, list, e) => handleRowClick(d, list, e)}
+                  onSelectAll={() => setSelectedIds(new Set(filteredDocs.map((d) => d.document_id)))}
                   onOpen={setHistoryDoc}
                   onOpenInViewer={openInViewer}
                   onArchive={archiveOne}
@@ -2071,6 +2299,50 @@ export function App() {
       )}
       {showCheatsheet && <Cheatsheet onClose={() => setShowCheatsheet(false)} />}
       {showAbout && <AboutDialog onClose={() => setShowAbout(false)} />}
+      {exportOptionsTarget && (
+        <ExportOptionsDialog
+          onCancel={() => setExportOptionsTarget(null)}
+          onSubmit={submitExport}
+          selectedItems={(() => {
+            if (!exportOptionsTarget.selectedIds || !documents) return undefined;
+            const folderPaths = new Map<string, string>();
+            const buildPath = (id: string): string => {
+              if (folderPaths.has(id)) return folderPaths.get(id)!;
+              const f = folders.find((x) => x.folder_id === id);
+              if (!f) return "";
+              const parentPath = f.parent ? buildPath(f.parent) : "";
+              const full = parentPath ? `${parentPath}/${f.visible_name}` : f.visible_name;
+              folderPaths.set(id, full);
+              return full;
+            };
+            folders.forEach((f) => buildPath(f.folder_id));
+            const idSet = new Set(exportOptionsTarget.selectedIds);
+            return documents
+              .filter((d) => idSet.has(d.document_id))
+              .map((d) => ({
+                folder: d.parent ? (folderPaths.get(d.parent) ?? "") : "",
+                name: d.visible_name,
+              }))
+              .sort((a, b) =>
+                a.folder.localeCompare(b.folder) || a.name.localeCompare(b.name),
+              );
+          })()}
+        />
+      )}
+      {exportProgress && (
+        <div className="dialog-overlay">
+          <div className="dialog" role="dialog" aria-modal="true" aria-labelledby="export-progress-title">
+            <h2 id="export-progress-title">Exporting PDFs</h2>
+            <div className="dialog-body" style={{ minWidth: "300px" }}>
+              <p>Exporting: {exportProgress.current_file}</p>
+              <progress max={exportProgress.total} value={exportProgress.current} style={{ width: "100%", marginTop: "1rem" }} />
+              <div style={{ textAlign: "right", fontSize: "12px", color: "var(--text-muted)", marginTop: "4px" }}>
+                {exportProgress.current} / {exportProgress.total}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
       {showPalette && (
         <CommandPalette
           items={paletteItems}
@@ -2112,1025 +2384,4 @@ export function App() {
       )}
     </div>
   );
-}
-
-// Drag-and-drop helpers + the per-view label/filter/persist helpers
-// they reference live in dedicated files:
-//   - `./drag`  — DataTransfer wire formats, descendant computation,
-//                 reorder-sort-index midpoints.
-//   - `./views` — `View` type, viewTitle/viewSubtitle, filterDocuments,
-//                 localStorage round-trip.
-// Both are imported at the top of this file.
-
-// =====================================================================
-// Welcome empty state
-// =====================================================================
-
-function WelcomeEmpty({
-  defaultPath,
-  onOpen,
-}: {
-  defaultPath: string | null;
-  onOpen: () => void;
-}) {
-  return (
-    <div className="empty">
-      <img className="empty-logo" src="/logo.png" alt="" />
-      <h2>Welcome to reHydrate</h2>
-      <p>
-        A calm, offline home for everything on your reMarkable. Sync stays
-        on your machine — no cloud, no telemetry.
-      </p>
-      {defaultPath && (
-        <p className="path">
-          Default library: <code>{defaultPath}</code>
-        </p>
-      )}
-      <p>
-        <button onClick={onOpen} className="primary" disabled={!defaultPath}>
-          <Icon name="library" /> Open default library
-        </button>
-      </p>
-    </div>
-  );
-}
-
-// =====================================================================
-// Sidebar items + folder tree
-// =====================================================================
-
-function SidebarItem({
-  label,
-  icon,
-  v,
-  view,
-  setView,
-  count,
-  dropTarget,
-  onDocumentDrop,
-}: {
-  label: string;
-  icon?: ReactNode;
-  v: View;
-  view: View;
-  setView: (v: View) => void;
-  count: number;
-  dropTarget?: string | null | "archive";
-  onDocumentDrop?: (documentId: string, target: string | null | "archive", batch?: string[]) => void;
-}) {
-  const [dragOver, setDragOver] = useState(false);
-  const droppable = dropTarget !== undefined && !!onDocumentDrop;
-  // Tint the drop highlight differently for Archive vs folders — a
-  // doc landing in Archive is destructive (it leaves the library
-  // listing), so we use the danger palette to make the difference
-  // unmistakable while the user is mid-drag.
-  const isArchiveTarget = dropTarget === "archive";
-  const cls = [
-    viewKey(view) === viewKey(v) ? "active" : "",
-    dragOver ? "drop-target" : "",
-    dragOver && isArchiveTarget ? "drop-target-danger" : "",
-  ]
-    .filter(Boolean)
-    .join(" ");
-  return (
-    <li
-      className={cls}
-      onClick={() => setView(v)}
-      title={`${count} document${count === 1 ? "" : "s"}`}
-      onDragOver={
-        droppable
-          ? (e) => {
-              if (!hasDocumentDragData(e)) return;
-              e.preventDefault();
-              e.dataTransfer.dropEffect = "move";
-              if (!dragOver) setDragOver(true);
-            }
-          : undefined
-      }
-      onDragLeave={droppable ? () => setDragOver(false) : undefined}
-      onDrop={
-        droppable
-          ? (e) => {
-              setDragOver(false);
-              const data = readDocumentDragData(e);
-              if (!data) return;
-              e.preventDefault();
-              onDocumentDrop!(data.id, dropTarget!, data.batch);
-            }
-          : undefined
-      }
-    >
-      {icon}
-      <span>{label}</span>
-      <span className="sidebar-count">{count}</span>
-    </li>
-  );
-}
-
-interface FolderTreeNode {
-  folder: FolderEntry;
-  children: FolderTreeNode[];
-  docCount: number;
-}
-
-function buildFolderTree(folders: FolderEntry[], docs: DocumentSummary[]): FolderTreeNode[] {
-  const docCounts = new Map<string, number>();
-  for (const d of docs) {
-    if (d.parent) docCounts.set(d.parent, (docCounts.get(d.parent) ?? 0) + 1);
-  }
-  const byId = new Map<string, FolderTreeNode>();
-  for (const f of folders) {
-    byId.set(f.folder_id, {
-      folder: f,
-      children: [],
-      docCount: docCounts.get(f.folder_id) ?? 0,
-    });
-  }
-  const roots: FolderTreeNode[] = [];
-  for (const node of byId.values()) {
-    const parentId = node.folder.parent;
-    if (parentId && byId.has(parentId)) byId.get(parentId)!.children.push(node);
-    else roots.push(node);
-  }
-  const sortRec = (nodes: FolderTreeNode[]) => {
-    nodes.sort((a, b) => {
-      const cmp = (a.folder.sort_index ?? 0) - (b.folder.sort_index ?? 0);
-      if (cmp !== 0) return cmp;
-      return a.folder.visible_name.localeCompare(b.folder.visible_name);
-    });
-    for (const n of nodes) sortRec(n.children);
-  };
-  sortRec(roots);
-  return roots;
-}
-
-type FolderReorder = (
-  draggedId: string,
-  newParent: string | null,
-  beforeId: string | null,
-  afterId: string | null,
-) => Promise<void> | void;
-
-function FolderTree({
-  folders,
-  documents,
-  view,
-  setView,
-  expanded,
-  setExpanded,
-  onDocumentDrop,
-  onRenameFolder,
-  onCreateSubfolder,
-  onDeleteFolder,
-  onReorderFolder,
-}: {
-  folders: FolderEntry[];
-  documents: DocumentSummary[];
-  view: View;
-  setView: (v: View) => void;
-  expanded: Set<string>;
-  setExpanded: (s: Set<string>) => void;
-  onDocumentDrop: (documentId: string, target: string | null | "archive", batch?: string[]) => void;
-  onRenameFolder: (f: FolderEntry) => void;
-  onCreateSubfolder: (parentId: string) => void;
-  onDeleteFolder: (f: FolderEntry) => void;
-  onReorderFolder: FolderReorder;
-}) {
-  const roots = buildFolderTree(folders, documents);
-  const toggle = (id: string) => {
-    const next = new Set(expanded);
-    if (next.has(id)) next.delete(id);
-    else next.add(id);
-    setExpanded(next);
-  };
-  return (
-    <ul>
-      {roots.map((node, idx) => (
-        <FolderRow
-          key={node.folder.folder_id}
-          node={node}
-          depth={0}
-          view={view}
-          setView={setView}
-          expanded={expanded}
-          toggle={toggle}
-          onDocumentDrop={onDocumentDrop}
-          onRenameFolder={onRenameFolder}
-          onCreateSubfolder={onCreateSubfolder}
-          onDeleteFolder={onDeleteFolder}
-          onReorderFolder={onReorderFolder}
-          allFolders={folders}
-          siblings={roots.map((n) => n.folder.folder_id)}
-          siblingIndex={idx}
-          parentId={null}
-        />
-      ))}
-    </ul>
-  );
-}
-
-function FolderRow({
-  node,
-  depth,
-  view,
-  setView,
-  expanded,
-  toggle,
-  onDocumentDrop,
-  onRenameFolder,
-  onCreateSubfolder,
-  onDeleteFolder,
-  onReorderFolder,
-  allFolders,
-  siblings,
-  siblingIndex,
-  parentId,
-}: {
-  node: FolderTreeNode;
-  depth: number;
-  view: View;
-  setView: (v: View) => void;
-  expanded: Set<string>;
-  toggle: (id: string) => void;
-  onDocumentDrop: (documentId: string, target: string | null | "archive", batch?: string[]) => void;
-  onRenameFolder: (f: FolderEntry) => void;
-  onCreateSubfolder: (parentId: string) => void;
-  onDeleteFolder: (f: FolderEntry) => void;
-  onReorderFolder: FolderReorder;
-  allFolders: FolderEntry[];
-  /** Ordered ids of this row's siblings under `parentId`, including
-   *  this row. Used to pick neighbour ids for sort-index midpoints. */
-  siblings: string[];
-  siblingIndex: number;
-  parentId: string | null;
-}) {
-  const v: View = { kind: "folder", id: node.folder.folder_id };
-  const isActive = viewKey(view) === viewKey(v);
-  const hasChildren = node.children.length > 0;
-  const isOpen = expanded.has(node.folder.folder_id);
-  const [dragOver, setDragOver] = useState(false);
-  // For folder-on-folder drag we track which third of the row the
-  // pointer is in: top → drop above, middle → drop into (reparent),
-  // bottom → drop below. `null` while no compatible drag is hovering.
-  const [folderDropZone, setFolderDropZone] = useState<
-    "above" | "into" | "below" | null
-  >(null);
-  // Spring-loaded folder: hover during a drag for >600ms auto-expands.
-  const hoverTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const cls = [
-    "folder-row",
-    isActive ? "active" : "",
-    dragOver ? "drop-target" : "",
-    folderDropZone ? `folder-drop-${folderDropZone}` : "",
-  ]
-    .filter(Boolean)
-    .join(" ");
-
-  const handleDragOver = (e: ReactDragEvent) => {
-    if (hasFolderDragData(e)) {
-      // `dataTransfer.getData(...)` is empty during dragover, so we
-      // read the dragged id from the module-local stash. Forbid drop
-      // when the dragged folder *is* this row (no-op move) or when
-      // this row lives inside the dragged folder's subtree (would
-      // create a cycle).
-      const draggedId = activeFolderDragIdSnapshot();
-      if (!draggedId) return;
-      const subtree = descendantIds(allFolders, draggedId);
-      if (subtree.has(node.folder.folder_id)) return;
-      e.preventDefault();
-      e.dataTransfer.dropEffect = "move";
-      const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
-      const y = e.clientY - rect.top;
-      const h = rect.height;
-      // 25% top → above, 25% bottom → below, middle → into.
-      const zone: "above" | "into" | "below" =
-        y < h * 0.25 ? "above" : y > h * 0.75 ? "below" : "into";
-      // Auto-expand a non-empty target after hovering "into" for
-      // 600ms so the user can drill deeper without manually toggling.
-      if (zone === "into" && hasChildren && !isOpen && !hoverTimer.current) {
-        hoverTimer.current = setTimeout(() => {
-          toggle(node.folder.folder_id);
-          hoverTimer.current = null;
-        }, 600);
-      }
-      if (folderDropZone !== zone) setFolderDropZone(zone);
-      return;
-    }
-    if (!hasDocumentDragData(e)) return;
-    e.preventDefault();
-    e.dataTransfer.dropEffect = "move";
-    if (!dragOver) {
-      setDragOver(true);
-      if (hasChildren && !isOpen && !hoverTimer.current) {
-        hoverTimer.current = setTimeout(() => {
-          toggle(node.folder.folder_id);
-          hoverTimer.current = null;
-        }, 600);
-      }
-    }
-  };
-  const clearDropState = () => {
-    setDragOver(false);
-    setFolderDropZone(null);
-    if (hoverTimer.current) {
-      clearTimeout(hoverTimer.current);
-      hoverTimer.current = null;
-    }
-  };
-
-  return (
-    <>
-      <li
-        className={cls}
-        data-depth={depth}
-        draggable
-        onDragStart={(e) => {
-          // Stop the parent <li> from also picking the drag up if any.
-          e.stopPropagation();
-          setFolderDragData(e, node.folder.folder_id);
-        }}
-        onDragEnd={() => {
-          // Always clear the module-local stash so a follow-up drag
-          // doesn't see the previous folder id.
-          clearActiveFolderDrag();
-        }}
-        onClick={() => setView(v)}
-        style={{ paddingLeft: 22 + depth * 14 }}
-        title={`${node.docCount} document${node.docCount === 1 ? "" : "s"}`}
-        onDragOver={handleDragOver}
-        onDragLeave={clearDropState}
-        onDrop={(e) => {
-          // Folder reorder takes priority — its MIME is more specific.
-          const folderId = readFolderDragData(e) ?? activeFolderDragIdSnapshot();
-          // Reject self-drops and drops that would push the folder
-          // into its own subtree (cycle).
-          const subtree = folderId
-            ? descendantIds(allFolders, folderId)
-            : null;
-          if (
-            folderId &&
-            subtree &&
-            !subtree.has(node.folder.folder_id)
-          ) {
-            const zone = folderDropZone ?? "into";
-            clearDropState();
-            clearActiveFolderDrag();
-            e.preventDefault();
-            e.stopPropagation();
-            if (zone === "into") {
-              // Reparent into this folder; drop at the end of its
-              // children list (no neighbour ids).
-              void onReorderFolder(folderId, node.folder.folder_id, null, null);
-            } else {
-              // Reorder among siblings of this row.
-              const beforeId =
-                zone === "below"
-                  ? node.folder.folder_id
-                  : siblingIndex > 0
-                    ? siblings[siblingIndex - 1]
-                    : null;
-              const afterId =
-                zone === "above"
-                  ? node.folder.folder_id
-                  : siblingIndex < siblings.length - 1
-                    ? siblings[siblingIndex + 1]
-                    : null;
-              void onReorderFolder(folderId, parentId, beforeId, afterId);
-            }
-            return;
-          }
-          clearDropState();
-          const data = readDocumentDragData(e);
-          if (!data) return;
-          e.preventDefault();
-          e.stopPropagation();
-          onDocumentDrop(data.id, node.folder.folder_id, data.batch);
-        }}
-      >
-        <span
-          className="folder-icon"
-          onClick={(e) => {
-            if (!hasChildren) return;
-            e.stopPropagation();
-            toggle(node.folder.folder_id);
-          }}
-          role={hasChildren ? "button" : undefined}
-          aria-label={hasChildren ? (isOpen ? "Collapse" : "Expand") : undefined}
-          style={hasChildren ? { cursor: "pointer" } : undefined}
-        >
-          {hasChildren ? (isOpen ? "▾" : "▸") : "•"}
-        </span>
-        <Icon name="folder" />
-        <span className="folder-name">{node.folder.visible_name}</span>
-        {node.docCount > 0 && (
-          <span className="sidebar-count">{node.docCount}</span>
-        )}
-        <span className="folder-kebab" onClick={(e) => e.stopPropagation()}>
-          <Menu
-            trigger={
-              <button
-                className="icon ghost"
-                aria-label="Folder actions"
-                onClick={(e) => e.stopPropagation()}
-              >
-                <Icon name="more" />
-              </button>
-            }
-            items={[
-              {
-                label: "New subfolder…",
-                icon: <Icon name="folder" />,
-                onClick: () => onCreateSubfolder(node.folder.folder_id),
-              },
-              {
-                label: "Rename…",
-                icon: <Icon name="folder" />,
-                onClick: () => onRenameFolder(node.folder),
-              },
-              {
-                label: "Delete folder…",
-                icon: <Icon name="trash" />,
-                onClick: () => onDeleteFolder(node.folder),
-                separatorBefore: true,
-              },
-            ]}
-          />
-        </span>
-      </li>
-      {hasChildren &&
-        isOpen &&
-        node.children.map((child, idx) => (
-          <FolderRow
-            key={child.folder.folder_id}
-            node={child}
-            depth={depth + 1}
-            view={view}
-            setView={setView}
-            expanded={expanded}
-            toggle={toggle}
-            onDocumentDrop={onDocumentDrop}
-            onRenameFolder={onRenameFolder}
-            onCreateSubfolder={onCreateSubfolder}
-            onDeleteFolder={onDeleteFolder}
-            onReorderFolder={onReorderFolder}
-            allFolders={allFolders}
-            siblings={node.children.map((c) => c.folder.folder_id)}
-            siblingIndex={idx}
-            parentId={node.folder.folder_id}
-          />
-        ))}
-    </>
-  );
-}
-
-// =====================================================================
-// Document list
-// =====================================================================
-
-function DocumentListSkeleton() {
-  return (
-    <table className="docs">
-      <thead>
-        <tr>
-          <th>Title</th>
-          <th>Type</th>
-          <th>Size</th>
-          <th>Pages</th>
-          <th>Synced</th>
-          <th></th>
-        </tr>
-      </thead>
-      <tbody>
-        {Array.from({ length: 8 }).map((_, i) => (
-          <tr key={i}>
-            <td><Skeleton width="60%" /></td>
-            <td><Skeleton width="40%" /></td>
-            <td><Skeleton width="40%" /></td>
-            <td><Skeleton width="30%" /></td>
-            <td><Skeleton width="50%" /></td>
-            <td></td>
-          </tr>
-        ))}
-      </tbody>
-    </table>
-  );
-}
-
-function DocumentList({
-  documents,
-  selectedIds,
-  selectMode,
-  focusId,
-  onClickRow,
-  onOpen,
-  onOpenInViewer,
-  onArchive,
-  onRename,
-  onMove,
-  onTranscribe,
-  onViewTranscript,
-  onStartExportDrag,
-  onPrefetchExport,
-  leavingIds,
-  emptyHint,
-}: {
-  documents: DocumentSummary[];
-  selectedIds: Set<string>;
-  selectMode: boolean;
-  focusId: string | null;
-  onClickRow: (
-    d: DocumentSummary,
-    e: { metaKey: boolean; ctrlKey: boolean; shiftKey: boolean },
-  ) => void;
-  onOpen: (d: DocumentSummary) => void;
-  onOpenInViewer: (d: DocumentSummary) => void;
-  onArchive: (d: DocumentSummary) => void;
-  onRename: (d: DocumentSummary) => void;
-  onMove: (d: DocumentSummary) => void;
-  onTranscribe: (d: DocumentSummary) => void;
-  onViewTranscript: (d: DocumentSummary) => void;
-  onStartExportDrag: (d: DocumentSummary) => void;
-  onPrefetchExport: (documentId: string) => void;
-  leavingIds: Set<string>;
-  emptyHint: { title: string; body: string };
-}) {
-  if (documents.length === 0) {
-    return (
-      <div className="empty">
-        <div className="empty-art">
-          <Icon name="library" size={36} />
-        </div>
-        <h2>{emptyHint.title}</h2>
-        <p>{emptyHint.body}</p>
-      </div>
-    );
-  }
-  return (
-    <table className={`docs${selectMode ? " select-mode" : ""}`}>
-      <thead>
-        <tr>
-          {selectMode && <th className="check-cell"></th>}
-          <th>Title</th>
-          <th>Type</th>
-          <th>Size</th>
-          <th>Pages</th>
-          <th>Synced</th>
-          <th></th>
-        </tr>
-      </thead>
-      <tbody>
-        {documents.map((d) => {
-          const isSelected = selectedIds.has(d.document_id);
-          const isFocused = focusId === d.document_id;
-          const leaving = leavingIds.has(d.document_id);
-          return (
-            <tr
-              key={d.document_id}
-              className={`clickable${isSelected ? " selected" : ""}${
-                isFocused && !isSelected ? " focused" : ""
-              }${leaving ? " leaving" : ""}`}
-              title={
-                selectMode
-                  ? "Click to toggle · ⇧-click for range · drag to move · ⌥-drag to export"
-                  : "Click to open · ⌘-click to start selecting · drag to move · ⌥-drag to export"
-              }
-              draggable
-              onDragStart={(e) => {
-                // ⌥-drag is the "export out to Finder/Desktop"
-                // gesture: cancel the HTML5 drag (so the internal
-                // folder-move handlers don't see it) and start a
-                // native OS drag-source via tauri-plugin-drag.
-                // Without ⌥, the existing internal drag path
-                // (folder reorder, batch move) runs unchanged.
-                if (e.altKey) {
-                  e.preventDefault();
-                  onStartExportDrag(d);
-                  return;
-                }
-                const ids = isSelected && selectedIds.size > 1
-                  ? [...selectedIds]
-                  : [d.document_id];
-                setDocumentDragData(e, d.document_id, ids);
-                setCustomDragImage(e, d.visible_name, ids.length, DRAG_ICON_SVG);
-              }}
-              onMouseEnter={() => onPrefetchExport(d.document_id)}
-              onClick={(e) =>
-                onClickRow(d, {
-                  metaKey: e.metaKey,
-                  ctrlKey: e.ctrlKey,
-                  shiftKey: e.shiftKey,
-                })
-              }
-            >
-              {selectMode && (
-                <td className="check-cell">
-                  <span
-                    className={`check-box${isSelected ? " checked" : ""}`}
-                    aria-hidden
-                  >
-                    {isSelected ? (
-                      <Icon name="checkboxChecked" size={16} />
-                    ) : (
-                      <Icon name="checkbox" size={16} />
-                    )}
-                  </span>
-                </td>
-              )}
-              <td className="row-title">
-                <span className="type-glyph"><TypeIcon kind={d.doc_type} /></span>
-                {d.visible_name}
-                {d.has_unpushed_changes && (
-                  <span className="row-pill" title="Has local changes that will sync to the tablet">
-                    Unsynced
-                  </span>
-                )}
-              </td>
-              <td className="muted small">{prettyType(d.doc_type)}</td>
-              <td className="num small">{formatBytes(d.size_bytes)}</td>
-              <td className="num small">{d.page_count ?? "—"}</td>
-              <td className="muted small">{prettyDate(d.last_observed_at)}</td>
-              <td className="row-actions">
-                <Menu
-                  trigger={
-                    <button className="icon ghost" aria-label="More actions" onClick={(e) => e.stopPropagation()}>
-                      <Icon name="more" />
-                    </button>
-                  }
-                  items={[
-                    {
-                      label: "Open in viewer",
-                      icon: <Icon name="library" />,
-                      onClick: () => onOpenInViewer(d),
-                    },
-                    {
-                      label: "Rename…",
-                      icon: <Icon name="folder" />,
-                      onClick: () => onRename(d),
-                    },
-                    {
-                      label: "Move to folder…",
-                      icon: <Icon name="folder" />,
-                      onClick: () => onMove(d),
-                    },
-                    {
-                      label: "Convert to text…",
-                      icon: <Icon name="wand" />,
-                      onClick: () => onTranscribe(d),
-                      separatorBefore: true,
-                    },
-                    {
-                      label: "View transcript",
-                      icon: <Icon name="info" />,
-                      onClick: () => onViewTranscript(d),
-                    },
-                    {
-                      label: "Show history",
-                      icon: <Icon name="history" />,
-                      onClick: () => onOpen(d),
-                      separatorBefore: true,
-                    },
-                    {
-                      label: "Move to Archive",
-                      icon: <Icon name="trash" />,
-                      onClick: () => onArchive(d),
-                      danger: true,
-                      separatorBefore: true,
-                    },
-                  ]}
-                />
-              </td>
-            </tr>
-          );
-        })}
-      </tbody>
-    </table>
-  );
-}
-
-function TypeIcon({ kind }: { kind: string }) {
-  if (kind === "Notebook") return <Icon name="notebook" />;
-  if (kind === "DocumentType.Pdf") return <Icon name="pdf" />;
-  if (kind === "DocumentType.Epub") return <Icon name="epub" />;
-  return <Icon name="library" />;
-}
-
-function DocumentGrid({
-  documents,
-  selectedIds,
-  selectMode,
-  focusId,
-  onClickRow,
-  onOpenInViewer,
-  onRename,
-  onArchive,
-  onShowHistory,
-  onMove,
-  onTranscribe,
-  onViewTranscript,
-  onStartExportDrag,
-  onPrefetchExport,
-  leavingIds,
-  emptyHint,
-}: {
-  documents: DocumentSummary[];
-  selectedIds: Set<string>;
-  selectMode: boolean;
-  focusId: string | null;
-  onClickRow: (
-    d: DocumentSummary,
-    e: { metaKey: boolean; ctrlKey: boolean; shiftKey: boolean },
-  ) => void;
-  onOpenInViewer: (d: DocumentSummary) => void;
-  onRename: (d: DocumentSummary) => void;
-  onArchive: (d: DocumentSummary) => void;
-  onShowHistory: (d: DocumentSummary) => void;
-  onMove: (d: DocumentSummary) => void;
-  onTranscribe: (d: DocumentSummary) => void;
-  onViewTranscript: (d: DocumentSummary) => void;
-  onStartExportDrag: (d: DocumentSummary) => void;
-  onPrefetchExport: (documentId: string) => void;
-  leavingIds: Set<string>;
-  emptyHint: { title: string; body: string };
-}) {
-  if (documents.length === 0) {
-    return (
-      <div className="empty">
-        <div className="empty-art">
-          <Icon name="library" size={36} />
-        </div>
-        <h2>{emptyHint.title}</h2>
-        <p>{emptyHint.body}</p>
-      </div>
-    );
-  }
-  return (
-    <div className="docs-grid">
-      {documents.map((d) => {
-        const isSelected = selectedIds.has(d.document_id);
-        const leaving = leavingIds.has(d.document_id);
-        return (
-          <div
-            key={d.document_id}
-            className={`tile${isSelected ? " selected" : ""}${
-              focusId === d.document_id && !isSelected ? " focused" : ""
-            }${leaving ? " leaving" : ""}`}
-            title="Click to open · drag to move · ⌥-drag to export"
-            draggable
-            onDragStart={(e) => {
-              // See the matching DocumentList handler for the ⌥
-              // branch rationale.
-              if (e.altKey) {
-                e.preventDefault();
-                onStartExportDrag(d);
-                return;
-              }
-              const ids =
-                isSelected && selectedIds.size > 1
-                  ? [...selectedIds]
-                  : [d.document_id];
-              setDocumentDragData(e, d.document_id, ids);
-              setCustomDragImage(e, d.visible_name, ids.length, DRAG_ICON_SVG);
-            }}
-            onMouseEnter={() => onPrefetchExport(d.document_id)}
-            onClick={(e) =>
-              onClickRow(d, {
-                metaKey: e.metaKey,
-                ctrlKey: e.ctrlKey,
-                shiftKey: e.shiftKey,
-              })
-            }
-          >
-            {selectMode && (
-              <span
-                className={`tile-check${isSelected ? " checked" : ""}`}
-                aria-hidden
-              >
-                {isSelected ? (
-                  <Icon name="checkboxChecked" size={18} />
-                ) : (
-                  <Icon name="checkbox" size={18} />
-                )}
-              </span>
-            )}
-            <Thumbnail documentId={d.document_id} docType={d.doc_type} />
-            <div className="title-line" title={d.visible_name}>
-              <TypeIcon kind={d.doc_type} />
-              <span style={{ overflow: "hidden", textOverflow: "ellipsis" }}>
-                {d.visible_name}
-              </span>
-            </div>
-            <div className="meta">
-              <span>{prettyType(d.doc_type)}</span>
-              <span>·</span>
-              <span>{prettyDate(d.last_observed_at)}</span>
-              {d.page_count !== null && (
-                <>
-                  <span>·</span>
-                  <span>
-                    {d.page_count}p
-                  </span>
-                </>
-              )}
-            </div>
-            {d.has_unpushed_changes && (
-              <span className="row-pill" title="Has local changes that will sync">
-                Unsynced
-              </span>
-            )}
-            <span
-              className="tile-kebab"
-              onClick={(e) => e.stopPropagation()}
-            >
-              <Menu
-                align="right"
-                trigger={
-                  <button
-                    className="icon ghost"
-                    aria-label="More actions"
-                    onClick={(e) => e.stopPropagation()}
-                  >
-                    <Icon name="more" />
-                  </button>
-                }
-                items={[
-                  {
-                    label: "Open in viewer",
-                    icon: <Icon name="library" />,
-                    onClick: () => onOpenInViewer(d),
-                  },
-                  {
-                    label: "Rename…",
-                    icon: <Icon name="folder" />,
-                    onClick: () => onRename(d),
-                  },
-                  {
-                    label: "Move to folder…",
-                    icon: <Icon name="folder" />,
-                    onClick: () => onMove(d),
-                  },
-                  {
-                    label: "Convert to text…",
-                    icon: <Icon name="wand" />,
-                    onClick: () => onTranscribe(d),
-                    separatorBefore: true,
-                  },
-                  {
-                    label: "View transcript",
-                    icon: <Icon name="info" />,
-                    onClick: () => onViewTranscript(d),
-                  },
-                  {
-                    label: "Show history",
-                    icon: <Icon name="history" />,
-                    onClick: () => onShowHistory(d),
-                    separatorBefore: true,
-                  },
-                  {
-                    label: "Move to Archive",
-                    icon: <Icon name="trash" />,
-                    onClick: () => onArchive(d),
-                    danger: true,
-                    separatorBefore: true,
-                  },
-                ]}
-              />
-            </span>
-          </div>
-        );
-      })}
-    </div>
-  );
-}
-
-function ArchiveList({
-  archived,
-  onRestore,
-  onPurge,
-  onShowHistory,
-  emptyHint,
-}: {
-  archived: ArchivedDocument[];
-  onRestore: (d: ArchivedDocument) => void;
-  onPurge: (d: ArchivedDocument) => void;
-  onShowHistory: (d: ArchivedDocument) => void;
-  emptyHint: { title: string; body: string };
-}) {
-  if (archived.length === 0) {
-    return (
-      <div className="empty">
-        <div className="empty-art">
-          <Icon name="trash" size={36} />
-        </div>
-        <h2>{emptyHint.title}</h2>
-        <p>{emptyHint.body}</p>
-      </div>
-    );
-  }
-  return (
-    <>
-      <div className="banner">
-        <Icon name="info" />
-        <span>
-          Items here will leave the tablet on the next sync. <strong>Restore</strong> brings them back; <strong>Delete forever</strong> drops every saved version and cannot be undone.
-        </span>
-      </div>
-      <table className="docs">
-        <thead>
-          <tr>
-            <th>Title</th>
-            <th>Type</th>
-            <th>Reason</th>
-            <th>Archived</th>
-            <th></th>
-          </tr>
-        </thead>
-        <tbody>
-          {archived.map((d) => (
-            <tr key={d.document_id}>
-              <td className="row-title">
-                <span className="type-glyph"><TypeIcon kind={d.doc_type} /></span>
-                {d.visible_name}
-              </td>
-              <td className="muted small">{prettyType(d.doc_type)}</td>
-              <td className="muted small">
-                {d.reason === "device" ? "Deleted on tablet" : "Deleted locally"}
-              </td>
-              <td className="muted small">{prettyDate(d.archived_at)}</td>
-              <td className="row-actions">
-                <Menu
-                  trigger={
-                    <button
-                      className="icon ghost"
-                      aria-label="More actions"
-                      onClick={(e) => e.stopPropagation()}
-                    >
-                      <Icon name="more" />
-                    </button>
-                  }
-                  items={[
-                    {
-                      label: "Restore to library",
-                      icon: <Icon name="restore" />,
-                      onClick: () => onRestore(d),
-                    },
-                    {
-                      label: "Show history",
-                      icon: <Icon name="history" />,
-                      onClick: () => onShowHistory(d),
-                    },
-                    {
-                      label: "Delete forever",
-                      icon: <Icon name="delete" />,
-                      onClick: () => onPurge(d),
-                      danger: true,
-                      separatorBefore: true,
-                    },
-                  ]}
-                />
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </>
-  );
-}
-
-// =====================================================================
-// Formatting
-// =====================================================================
-
-function prettyType(s: string): string {
-  if (s === "Notebook") return "Notebook";
-  if (s === "DocumentType.Pdf") return "PDF";
-  if (s === "DocumentType.Epub") return "EPUB";
-  return s;
-}
-
-function prettyDate(iso: string): string {
-  if (!iso) return "—";
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return iso;
-  const now = Date.now();
-  const diffMs = now - d.getTime();
-  const minutes = Math.floor(diffMs / 60_000);
-  if (minutes < 1) return "just now";
-  if (minutes < 60) return `${minutes}m ago`;
-  const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `${hours}h ago`;
-  const days = Math.floor(hours / 24);
-  if (days < 30) return `${days}d ago`;
-  return d.toLocaleDateString();
-}
-
-function formatBytes(n: number): string {
-  if (n < 1024) return `${n} B`;
-  const units = ["KB", "MB", "GB", "TB"];
-  let v = n / 1024;
-  let i = 0;
-  while (v >= 1024 && i < units.length - 1) {
-    v /= 1024;
-    i++;
-  }
-  return `${v.toFixed(1)} ${units[i]}`;
 }

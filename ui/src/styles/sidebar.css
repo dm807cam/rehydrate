@@ -1,0 +1,290 @@
+/* =====================================================================
+ * Layout.
+ * ===================================================================== */
+
+.layout {
+  display: grid;
+  grid-template-columns: 240px 1fr;
+  min-height: 0;
+}
+
+.sidebar {
+  background: var(--bg);
+  border-right: 1px solid var(--border);
+  padding: var(--space-3) 0 var(--space-4);
+  overflow-y: auto;
+}
+.sidebar section {
+  margin-bottom: var(--space-4);
+}
+.sidebar h3 {
+  font-size: var(--text-xs);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+  margin: 0 var(--space-3) var(--space-1);
+  font-weight: 600;
+}
+.sidebar ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.sidebar li {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 5px var(--space-3) 5px 22px;
+  margin: 0 6px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  user-select: none;
+  transition:
+    background var(--motion-fast) var(--ease),
+    color var(--motion-fast) var(--ease);
+}
+.sidebar li .icon-svg {
+  width: 14px;
+  height: 14px;
+  color: var(--muted);
+}
+.sidebar li:hover:not(.muted) {
+  background: var(--row-hover);
+}
+.sidebar li:hover:not(.muted) .icon-svg {
+  color: var(--accent);
+}
+.sidebar li.active {
+  background: var(--accent-bg);
+  color: var(--accent);
+}
+.sidebar li.active::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 6px;
+  bottom: 6px;
+  width: 3px;
+  border-radius: 0 3px 3px 0;
+  background: var(--accent);
+  animation: slideInUp var(--motion-base) var(--ease);
+}
+.sidebar li.active .icon-svg {
+  color: var(--accent);
+}
+.sidebar li.muted {
+  color: var(--muted);
+  font-style: italic;
+  cursor: default;
+}
+.sidebar li.drop-target {
+  background: var(--accent-bg);
+}
+.sidebar li.drop-target::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 4px;
+  bottom: 4px;
+  width: 3px;
+  border-radius: 0 3px 3px 0;
+  background: var(--accent);
+}
+/* Destructive drop target (Archive): danger-tinted highlight so the
+ * user can tell at a glance that they're about to remove the doc
+ * from the library, not just move it. */
+.sidebar li.drop-target.drop-target-danger {
+  background: var(--danger-bg, var(--err-bg));
+  color: var(--danger, var(--err));
+}
+.sidebar li.drop-target.drop-target-danger::before {
+  background: var(--danger, var(--err));
+}
+.sidebar li.drop-target.drop-target-danger .icon-svg {
+  color: var(--danger, var(--err));
+}
+.sidebar-count {
+  margin-left: auto;
+  color: var(--muted);
+  font-size: var(--text-xs);
+  font-variant-numeric: tabular-nums;
+}
+.sidebar li.active .sidebar-count {
+  color: var(--accent);
+}
+.sidebar-divider {
+  height: 1px;
+  background: var(--border);
+  margin: var(--space-2) var(--space-3);
+}
+
+/* Section header with an inline action ("+ New folder"). */
+.sidebar-section-head {
+  display: flex;
+  align-items: center;
+  margin: 0 var(--space-3) var(--space-1);
+  gap: var(--space-2);
+}
+.sidebar-section-head h3 {
+  margin: 0;
+}
+.sidebar-section-head .sidebar-add {
+  margin-left: auto;
+  width: 18px;
+  height: 18px;
+  font-size: 16px;
+  line-height: 1;
+  padding: 0;
+  border-radius: 4px;
+  color: var(--muted);
+}
+.sidebar-section-head .sidebar-add:hover {
+  color: var(--accent);
+  background: var(--row-hover);
+}
+.sidebar-empty {
+  margin: 0 var(--space-3) var(--space-2);
+  font-size: var(--text-xs);
+  font-style: italic;
+}
+
+/* Folder reorder drop indicators. The "into" zone reuses the
+ * existing drop-target highlight; "above" / "below" draw a 2px line
+ * along the edge of the row so the user sees exactly where the
+ * folder will land. */
+.sidebar li.folder-row.folder-drop-above::after,
+.sidebar li.folder-row.folder-drop-below::after {
+  content: "";
+  position: absolute;
+  left: 6px;
+  right: 6px;
+  height: 2px;
+  background: var(--accent);
+  pointer-events: none;
+}
+.sidebar li.folder-row.folder-drop-above::after { top: -1px; }
+.sidebar li.folder-row.folder-drop-below::after { bottom: -1px; }
+
+/* Library identity card */
+.library-card {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3) var(--space-3);
+  margin: 0 6px var(--space-3);
+  border-bottom: 1px solid var(--border);
+}
+.library-card .lib-mark {
+  width: 28px;
+  height: 28px;
+  border-radius: var(--radius-md);
+  background: var(--accent-bg);
+  color: var(--accent);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+}
+.library-card .lib-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.library-card .lib-name {
+  font-weight: 600;
+  font-size: var(--text-base);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.library-card .lib-meta {
+  color: var(--muted);
+  font-size: var(--text-xs);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Folder tree */
+.folder-row {
+  gap: 6px;
+  position: relative;
+}
+.folder-icon {
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 1;
+  width: 14px;
+  text-align: center;
+  user-select: none;
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.folder-icon[role="button"] {
+  color: var(--muted-soft);
+  cursor: pointer;
+  border-radius: var(--radius-xs);
+  transition: color var(--motion-fast) var(--ease), background var(--motion-fast) var(--ease);
+}
+.folder-icon[role="button"]:hover {
+  color: var(--text);
+  background: var(--row-hover);
+}
+.folder-chevron {
+  transition: transform 150ms ease;
+  transform: rotate(0deg);
+}
+.folder-chevron.open {
+  transform: rotate(90deg);
+}
+.folder-name {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex: 1;
+}
+/* Kebab sits in an absolute slot so it doesn't push the count
+ * leftward — that way the rest-state count column aligns with the
+ * Library / Bin counts above. On hover, the count cross-fades out
+ * and the kebab cross-fades in, occupying the same visual slot. */
+.folder-kebab {
+  position: absolute;
+  right: 6px;
+  top: 50%;
+  transform: translateY(-50%);
+  display: inline-flex;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--motion-fast) var(--ease);
+}
+.folder-row:hover .folder-kebab,
+.folder-row:focus-within .folder-kebab {
+  opacity: 1;
+  pointer-events: auto;
+}
+.folder-row:hover > .sidebar-count,
+.folder-row:focus-within > .sidebar-count {
+  opacity: 0;
+}
+.folder-row > .sidebar-count {
+  transition: opacity var(--motion-fast) var(--ease);
+}
+.folder-kebab button.icon {
+  width: 22px;
+  height: 22px;
+}
+/* Indent guide for nested folders */
+.folder-row[data-depth="1"]::after,
+.folder-row[data-depth="2"]::after,
+.folder-row[data-depth="3"]::after,
+.folder-row[data-depth="4"]::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: var(--border);
+  left: calc(28px + (attr(data-depth number, 0) - 0.5) * 12px);
+}
+

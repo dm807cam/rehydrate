@@ -1,0 +1,28 @@
+/* =====================================================================
+ * Thumbnails.
+ * ===================================================================== */
+
+.thumb {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg-sunken);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  flex: none;
+  position: relative;
+}
+.thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  animation: fadeIn var(--motion-base) var(--ease);
+}
+.thumb-fallback {
+  color: var(--muted-soft);
+}
+.thumb-tile {
+  box-shadow: var(--shadow-1);
+}
+

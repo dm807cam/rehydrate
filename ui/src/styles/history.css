@@ -1,0 +1,64 @@
+/* =====================================================================
+ * History list.
+ * ===================================================================== */
+
+.history-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+}
+.history-list li {
+  padding: var(--space-3) var(--space-5);
+  border-bottom: 1px solid var(--border);
+  display: grid;
+  gap: 6px;
+}
+.history-list .row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.history-list .row.meta {
+  margin-left: 4px;
+}
+.history-list .note {
+  font-size: var(--text-sm);
+  background: var(--bg);
+  padding: 4px 10px;
+  border-radius: var(--radius-xs);
+  border: 1px solid var(--border);
+  cursor: text;
+}
+.history-list .note-add {
+  font-size: var(--text-xs);
+  color: var(--muted);
+  align-self: start;
+}
+.history-list input[type="text"] {
+  font-size: var(--text-sm);
+  padding: 4px 10px;
+}
+
+/* =====================================================================
+ * Logs.
+ * ===================================================================== */
+
+.log-tail {
+  overflow-y: auto;
+  padding: var(--space-2) var(--space-3);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11.5px;
+  line-height: 1.45;
+  color: var(--text);
+  background: var(--bg);
+  flex: 1;
+  min-height: 0;
+}
+.log-line {
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+.log-line.warn { color: var(--warn); }
+.log-line.err  { color: var(--err); }
+

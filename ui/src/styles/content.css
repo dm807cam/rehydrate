@@ -1,0 +1,229 @@
+/* =====================================================================
+ * Content area.
+ * ===================================================================== */
+
+.content {
+  overflow: auto;
+  background: var(--bg-elev);
+  position: relative;
+}
+
+/* Sticky wrapper: content-header + selection bar both pin to the top
+ * so the selection bar never scrolls away mid-list. */
+.content-top {
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  background: var(--bg-elev);
+}
+
+.content-header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  border-bottom: 1px solid var(--border);
+}
+.content-header h1 {
+  font-size: var(--text-xl);
+  font-weight: 600;
+  margin: 0;
+  letter-spacing: -0.01em;
+}
+.content-header .crumbs {
+  color: var(--muted);
+  font-size: var(--text-sm);
+  font-weight: 400;
+}
+
+.empty {
+  padding: var(--space-7);
+  max-width: 720px;
+  color: var(--muted);
+  animation: fadeIn var(--motion-base) var(--ease);
+}
+.empty h2 {
+  color: var(--text);
+  margin: 0 0 var(--space-2);
+  font-size: var(--text-2xl);
+  letter-spacing: -0.01em;
+  font-weight: 600;
+}
+.empty p {
+  margin: 0 0 var(--space-3);
+  line-height: 1.55;
+}
+.empty .path code {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  padding: 2px 6px;
+  border-radius: var(--radius-xs);
+}
+.empty .empty-art {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 88px;
+  height: 88px;
+  border-radius: var(--radius-xl);
+  background: var(--accent-bg);
+  color: var(--accent);
+  margin-bottom: var(--space-3);
+}
+.empty .empty-logo {
+  /* 150 element ⇒ ~120 visible squircle on the Apple icon grid. */
+  width: 150px;
+  height: 150px;
+  object-fit: contain;
+  margin-bottom: var(--space-4);
+  filter: drop-shadow(0 4px 14px rgba(0, 0, 0, 0.12));
+}
+
+/* =====================================================================
+ * Errors / banners.
+ * ===================================================================== */
+
+.error {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  margin: var(--space-3) var(--space-4);
+  padding: 8px 14px;
+  border: 1px solid var(--err-border);
+  background: var(--err-bg);
+  color: var(--err);
+  border-radius: var(--radius-md);
+  animation: slideInUp var(--motion-base) var(--ease);
+}
+.error.inline {
+  margin: var(--space-2) 0;
+}
+.error .close-inline {
+  margin-left: auto;
+  color: var(--err);
+}
+
+.banner {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  margin: var(--space-3) var(--space-4) 0;
+  padding: 10px 14px;
+  background: var(--bg-sunken);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  color: var(--muted);
+  font-size: var(--text-sm);
+}
+.banner strong {
+  color: var(--text);
+}
+
+/* =====================================================================
+ * Document table.
+ * ===================================================================== */
+
+.docs {
+  width: 100%;
+  border-collapse: collapse;
+}
+.docs th,
+.docs td {
+  padding: 9px var(--space-3);
+  text-align: left;
+  border-bottom: 1px solid var(--border);
+}
+.docs thead th {
+  position: sticky;
+  top: var(--content-top-h, 56px); /* set dynamically via inline style on .content */
+  background: var(--bg-elev);
+  font-weight: 600;
+  font-size: var(--text-xs);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+  z-index: 4;
+}
+.docs thead th.sortable {
+  cursor: pointer;
+  user-select: none;
+}
+.docs thead th.sortable:hover {
+  color: var(--text);
+}
+.docs thead th.sort-active {
+  color: var(--accent);
+}
+.docs tbody tr {
+  transition: background var(--motion-fast) var(--ease);
+}
+.docs tbody tr.clickable {
+  cursor: pointer;
+}
+.docs tbody tr.clickable:hover {
+  background: var(--row-hover);
+}
+.docs tbody tr.selected {
+  background: var(--row-selected);
+}
+/* Subtle keyboard cursor — only painted when the user has actually
+ * navigated with arrow keys. A click in default mode does NOT paint
+ * this, because click resets focus visually only on subsequent
+ * keyboard nav. */
+.docs tbody tr.focused {
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+.docs-grid .tile.focused {
+  outline: 1px solid var(--accent-border);
+  outline-offset: -1px;
+}
+.docs tbody tr[draggable="true"] {
+  cursor: grab;
+}
+.docs tbody tr[draggable="true"]:active {
+  cursor: grabbing;
+}
+.docs td.row-actions {
+  text-align: right;
+  width: 1%;
+  white-space: nowrap;
+  opacity: 0;
+  transition: opacity var(--motion-fast) var(--ease);
+}
+.docs tbody tr:hover .row-actions,
+.docs tbody tr:focus-within .row-actions {
+  opacity: 1;
+}
+.docs td.row-title {
+  font-weight: 500;
+}
+.docs td.num {
+  font-variant-numeric: tabular-nums;
+  color: var(--muted);
+}
+
+.muted { color: var(--muted); }
+.small { font-size: var(--text-xs); }
+.mono {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: var(--text-sm);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Type-icon glyph used in the title cell */
+.type-glyph {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-sunken);
+  color: var(--muted);
+  margin-right: var(--space-2);
+}
+.type-glyph .icon-svg {
+  width: 13px;
+  height: 13px;
+}
+

@@ -1,0 +1,204 @@
+/* =====================================================================
+ * Buttons.
+ * ===================================================================== */
+
+button {
+  font: inherit;
+  background: var(--bg-elev);
+  color: var(--text);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  padding: 5px 12px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  transition:
+    background var(--motion-fast) var(--ease),
+    border-color var(--motion-fast) var(--ease),
+    color var(--motion-fast) var(--ease),
+    transform var(--motion-fast) var(--ease);
+}
+button:hover:not(:disabled) {
+  background: var(--accent-bg);
+  border-color: var(--accent-border);
+  color: var(--accent);
+}
+button:active:not(:disabled) {
+  transform: translateY(0.5px);
+}
+button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+button.primary {
+  background: var(--accent);
+  color: var(--accent-fg);
+  border-color: var(--accent);
+}
+button.primary:hover:not(:disabled) {
+  filter: brightness(1.06);
+  color: var(--accent-fg);
+  border-color: var(--accent);
+  background: var(--accent);
+}
+button.danger {
+  background: var(--bg-elev);
+  color: var(--danger);
+  border-color: color-mix(in srgb, var(--danger), transparent 60%);
+}
+button.danger:hover:not(:disabled) {
+  background: var(--danger-bg);
+  color: var(--danger);
+  border-color: var(--danger);
+}
+button.ghost {
+  background: transparent;
+  border-color: transparent;
+  color: var(--text);
+}
+button.ghost:hover:not(:disabled) {
+  background: var(--row-hover);
+  color: var(--text);
+  border-color: transparent;
+}
+button.icon {
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  justify-content: center;
+}
+button.close,
+button.close-inline {
+  background: transparent;
+  border: none;
+  color: var(--muted);
+  font-size: 18px;
+  line-height: 1;
+  padding: 0 6px;
+  cursor: pointer;
+}
+button.close:hover,
+button.close-inline:hover {
+  background: var(--row-hover);
+  color: var(--text);
+  border-color: transparent;
+}
+button.link {
+  background: transparent;
+  border: none;
+  color: var(--accent);
+  padding: 0;
+  font-size: var(--text-sm);
+  cursor: pointer;
+}
+button.link:hover {
+  text-decoration: underline;
+  background: transparent;
+  border-color: transparent;
+  color: var(--accent);
+}
+button.link.danger {
+  color: var(--danger);
+}
+button.link.danger:hover {
+  color: var(--danger);
+}
+
+.icon-svg {
+  width: 14px;
+  height: 14px;
+  flex: none;
+  display: inline-block;
+  stroke: currentColor;
+  stroke-width: 1.75;
+  fill: none;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+/* =====================================================================
+ * Pills.
+ * ===================================================================== */
+
+.pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 10px;
+  border-radius: var(--radius-pill);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  color: var(--muted);
+  font-size: var(--text-sm);
+  user-select: none;
+  cursor: default;
+  transition:
+    background var(--motion-fast) var(--ease),
+    color var(--motion-fast) var(--ease),
+    border-color var(--motion-fast) var(--ease);
+}
+.pill.clickable {
+  cursor: pointer;
+}
+.pill.clickable:hover {
+  background: var(--row-hover);
+  border-color: var(--border-strong);
+}
+.pill-ok {
+  color: var(--ok);
+  background: var(--ok-bg);
+  border-color: transparent;
+}
+.pill-warn {
+  color: var(--warn);
+  background: var(--warn-bg);
+  border-color: transparent;
+}
+.pill-err {
+  color: var(--err);
+  background: var(--err-bg);
+  border-color: transparent;
+}
+.pill-accent {
+  color: var(--accent);
+  background: var(--accent-bg);
+  border-color: transparent;
+}
+.pill-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: currentColor;
+  flex: none;
+}
+.pill-dot.live {
+  animation: pulseDot 1.4s infinite var(--ease);
+}
+
+/* =====================================================================
+ * Inputs.
+ * ===================================================================== */
+
+input[type="password"],
+input[type="text"],
+input[type="search"] {
+  font: inherit;
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  padding: 6px 10px;
+  width: 100%;
+  transition:
+    border-color var(--motion-fast) var(--ease),
+    box-shadow var(--motion-fast) var(--ease);
+}
+input[type="password"]:focus,
+input[type="text"]:focus,
+input[type="search"]:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-bg);
+}
+

@@ -7,8 +7,10 @@ import type {
   DeviceInfo,
   DeviceState,
   DocumentSummary,
+  ExportAsPdfsResult,
   ExportDragPaths,
   ExportFormat,
+  ExportProgressEvent,
   ExportResult,
   FolderEntry,
   GarbageCollectReport,
@@ -57,6 +59,9 @@ export const ipc = {
   switchLibrary: (path: string) => invoke<string>("switch_library", { path }),
   pickLibraryDirectory: () =>
     invoke<PickedLibraryDirectory | null>("pick_library_directory"),
+  /** Open the OS folder picker and return the chosen path (or null if
+   *  the user cancelled). Used by the export-as-PDFs flow. */
+  pickExportDirectory: () => invoke<string | null>("pick_export_directory"),
   listRecentLibraries: () =>
     invoke<RecentLibraryEntry[]>("list_recent_libraries"),
   librarySummary: () => invoke<LibrarySummary>("library_summary"),
@@ -103,9 +108,35 @@ export const ipc = {
     invoke<void>("set_version_note", { versionId, note }),
   exportVersion: (versionId: number) =>
     invoke<ExportResult | null>("export_version", { versionId }),
+  exportAsPdfs: (
+    targetDir: string,
+    rootFolderId: string | null,
+    includeAnnotations: boolean,
+    keepDeleted: boolean,
+  ) =>
+    invoke<ExportAsPdfsResult>("export_as_pdfs", {
+      targetDir,
+      rootFolderId,
+      includeAnnotations,
+      keepDeleted,
+    }),
+  exportSelectedAsPdfs: (
+    targetDir: string,
+    documentIds: string[],
+    includeAnnotations: boolean,
+  ) =>
+    invoke<ExportAsPdfsResult>("export_selected_as_pdfs", {
+      targetDir,
+      documentIds,
+      includeAnnotations,
+    }),
   verifyLibrary: () => invoke<VerifyReport>("verify_library"),
   importFile: () => invoke<DocumentSummary | null>("import_file"),
-  importDroppedFile: (fileName: string, bytes: Uint8Array) =>
+  importDroppedFile: (
+    fileName: string,
+    bytes: Uint8Array,
+    parentId?: string | null,
+  ) =>
     // Tauri 2's JSON IPC marshals a plain `number[]` straight into
     // `Vec<u8>` on the Rust side. We pay a per-byte JSON serialisation
     // cost (a few hundred ms for a 100 MB PDF) but avoid pulling in a
@@ -115,6 +146,7 @@ export const ipc = {
     invoke<DocumentSummary>("import_dropped_file", {
       fileName,
       bytes: Array.from(bytes),
+      parentId: parentId ?? null,
     }),
   garbageCollect: () => invoke<GarbageCollectReport>("garbage_collect"),
   getRecentLogs: (maxLines?: number) =>
@@ -137,6 +169,10 @@ export const ipc = {
       remember: remember ?? null,
     }),
   disconnectDevice: () => invoke<void>("disconnect_device"),
+  /** Hard-delete every document in the tablet's Trash (those with
+   *  `deleted: true` in their `.metadata`). Resolves with the count
+   *  of UUIDs removed. Requires an active device connection. */
+  purgeDeviceTrash: () => invoke<number>("purge_device_trash"),
 
   pullPlan: () => invoke<PullPlan>("pull_plan"),
   pullExecute: () => invoke<SyncReport>("pull_execute"),
@@ -261,4 +297,10 @@ export function onLegacyFormatWarning(
   return listen<string>("document:legacy-format-warning", (e) =>
     cb(e.payload),
   );
+}
+
+export function onExportProgress(
+  cb: (ev: ExportProgressEvent) => void,
+): Promise<UnlistenFn> {
+  return listen<ExportProgressEvent>("export:progress", (e) => cb(e.payload));
 }

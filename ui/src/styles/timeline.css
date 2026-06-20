@@ -1,0 +1,114 @@
+/* =====================================================================
+ * History timeline.
+ * ===================================================================== */
+
+.timeline {
+  list-style: none;
+  margin: 0;
+  padding: var(--space-3) 0;
+  overflow-y: auto;
+  position: relative;
+}
+.timeline::before {
+  content: "";
+  position: absolute;
+  left: 35px;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: var(--border);
+}
+.timeline li {
+  position: relative;
+  padding: var(--space-3) var(--space-4) var(--space-3) 60px;
+  display: grid;
+  gap: 6px;
+}
+.timeline li.current {
+  background: var(--row-hover);
+}
+.timeline .timeline-dot {
+  position: absolute;
+  left: 28px;
+  top: 18px;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  border: 2px solid var(--bg-elev);
+  background: var(--border-strong);
+  box-shadow: 0 0 0 1px var(--border-strong);
+}
+.timeline li.current .timeline-dot {
+  background: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent);
+}
+.timeline .row {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.timeline .timeline-diff {
+  display: inline-flex;
+  gap: 8px;
+  font-size: var(--text-xs);
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+.timeline .timeline-diff .add { color: var(--ok); }
+.timeline .timeline-diff .rm  { color: var(--err); }
+.timeline .timeline-diff .ch  { color: var(--warn); }
+.timeline .timeline-actions {
+  display: flex;
+  gap: var(--space-3);
+  margin-top: 4px;
+}
+.timeline .note {
+  font-size: var(--text-sm);
+  background: var(--bg);
+  padding: 4px 10px;
+  border-radius: var(--radius-xs);
+  border: 1px solid var(--border);
+  cursor: text;
+}
+
+/* =====================================================================
+ * Cheatsheet overlay (?).
+ * ===================================================================== */
+
+.cheatsheet {
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-pop);
+  padding: var(--space-5);
+  width: 520px;
+  max-width: 92vw;
+  display: grid;
+  gap: var(--space-3);
+  animation: scaleIn var(--motion-base) var(--ease);
+}
+.cheatsheet h2 {
+  margin: 0;
+  font-size: var(--text-xl);
+  letter-spacing: -0.01em;
+  font-weight: 600;
+}
+.cheatsheet dl {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 8px var(--space-4);
+  margin: 0;
+}
+.cheatsheet dt {
+  display: inline-flex;
+  gap: 4px;
+  align-items: center;
+  font-size: var(--text-sm);
+}
+.cheatsheet dd {
+  margin: 0;
+  font-size: var(--text-sm);
+  color: var(--muted);
+}
+
