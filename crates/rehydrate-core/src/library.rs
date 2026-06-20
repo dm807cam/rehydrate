@@ -1428,6 +1428,21 @@ impl Library {
             )));
         }
 
+        // If the document was ever pushed to the device (last_seen_manifest
+        // is non-NULL), queue a hard-delete so the pull engine removes it
+        // from the tablet on the next sync instead of re-downloading it.
+        // Without this, wiping sync_state below makes the next pull see the
+        // still-present device document as New and resurrect it.
+        let was_synced: bool = tx
+            .query_row(
+                "SELECT last_seen_manifest IS NOT NULL \
+                 FROM sync_state WHERE document_id = ?1",
+                params![document_id],
+                |r| r.get(0),
+            )
+            .optional()?
+            .unwrap_or(false);
+
         tx.execute(
             "DELETE FROM archived_documents WHERE document_id = ?1",
             params![document_id],
@@ -1440,7 +1455,36 @@ impl Library {
             "DELETE FROM sync_state WHERE document_id = ?1",
             params![document_id],
         )?;
+
+        if was_synced {
+            tx.execute(
+                "INSERT OR IGNORE INTO device_deletion_queue(document_id) VALUES (?1)",
+                params![document_id],
+            )?;
+        }
+
         tx.commit()?;
+        Ok(())
+    }
+
+    /// Return all document IDs currently queued for hard-deletion from the
+    /// device. Called by the pull engine before processing the device listing.
+    pub fn list_device_deletion_queue(&self) -> Result<std::collections::HashSet<String>> {
+        let conn = self.db.lock();
+        let mut stmt = conn.prepare("SELECT document_id FROM device_deletion_queue")?;
+        let rows: std::collections::HashSet<String> = stmt
+            .query_map([], |r| r.get(0))?
+            .collect::<rusqlite::Result<_>>()?;
+        Ok(rows)
+    }
+
+    /// Remove a document from the device-deletion queue after the tablet-side
+    /// hard-delete has been confirmed (or is known to be unnecessary).
+    pub fn dequeue_device_deletion(&self, document_id: &str) -> Result<()> {
+        self.db.lock().execute(
+            "DELETE FROM device_deletion_queue WHERE document_id = ?1",
+            params![document_id],
+        )?;
         Ok(())
     }
 
@@ -3962,6 +4006,44 @@ mod tests {
         let lib = Library::open(tmp.path()).unwrap();
         let err = lib.purge_archived_document("never-existed").unwrap_err();
         assert!(matches!(err, CoreError::NotFound(_)));
+    }
+
+    #[test]
+    fn purge_synced_doc_queues_device_deletion() {
+        let tmp = tempfile::tempdir().unwrap();
+        let lib = Library::open(tmp.path()).unwrap();
+        let m = seed_manifest(&lib, "doc-1", &[("a.rm", b"bytes-for-purge-queue-test")]);
+        // record_version(Pulled) sets last_seen_manifest, so the doc counts as
+        // "was on the device".
+        lib.record_version(&m, Source::Pulled).unwrap();
+        lib.archive_document("doc-1", ArchiveReason::Device)
+            .unwrap();
+
+        assert!(lib.list_device_deletion_queue().unwrap().is_empty());
+        lib.purge_archived_document("doc-1").unwrap();
+
+        // A previously-synced doc is queued for hard-delete from the device so
+        // the next pull removes it rather than resurrecting it.
+        let queue = lib.list_device_deletion_queue().unwrap();
+        assert!(queue.contains("doc-1"));
+
+        // Dequeue clears it.
+        lib.dequeue_device_deletion("doc-1").unwrap();
+        assert!(lib.list_device_deletion_queue().unwrap().is_empty());
+    }
+
+    #[test]
+    fn purge_unsynced_doc_does_not_queue_device_deletion() {
+        let tmp = tempfile::tempdir().unwrap();
+        let lib = Library::open(tmp.path()).unwrap();
+        let m = seed_manifest(&lib, "doc-1", &[("a.rm", b"bytes-for-unsynced-purge")]);
+        // record_version(Imported) leaves last_seen_manifest NULL — the doc was
+        // never pushed to a device, so there's nothing to delete there.
+        lib.record_version(&m, Source::Imported).unwrap();
+        lib.archive_document("doc-1", ArchiveReason::Local).unwrap();
+
+        lib.purge_archived_document("doc-1").unwrap();
+        assert!(lib.list_device_deletion_queue().unwrap().is_empty());
     }
 
     #[test]
