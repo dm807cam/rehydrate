@@ -94,7 +94,7 @@ jobs:
           targets: aarch64-apple-darwin
 
       - name: Setup Node
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@v7
         with:
           node-version: '22'
 
@@ -288,7 +288,7 @@ jobs:
           targets: aarch64-apple-darwin
 
       - name: Setup Node
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@v7
         with:
           # Vite 8 requires Node ^20.19 || >=22.12.
           node-version: '22'
